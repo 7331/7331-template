@@ -1,6 +1,6 @@
-# 7331-template
+# python-backend-template
 
-[![template-check](https://github.com/7331/7331-template/actions/workflows/template-check.yml/badge.svg?branch=main)](https://github.com/7331/7331-template/actions/workflows/template-check.yml)
+[![template-check](https://github.com/7331/python-backend-template/actions/workflows/template-check.yml/badge.svg?branch=main)](https://github.com/7331/python-backend-template/actions/workflows/template-check.yml)
 
 A [Copier](https://copier.readthedocs.io/en/stable/) template for a Python backend app. It gives you FastAPI on Python
 3.15, typed structlog events, a typer CLI, uv and Docker Compose. PostgreSQL through SQLAlchemy and Alembic is on
@@ -10,7 +10,7 @@ unless you turn it off. There is no frontend. The OpenAPI document is the contra
 ## Start an app
 
 ```sh
-uvx copier copy --trust gh:7331/7331-template my-app
+uvx copier copy --trust gh:7331/python-backend-template my-app
 cd my-app
 cp .env.example .env
 cp .env.database-owner.example .env.database-owner
@@ -47,7 +47,7 @@ uvx copier update --trust
 
 The app must be a git repository with a clean tree. Copier reads `.copier-answers.yml`, diffs the recorded template
 version against the newest release tag and applies that diff. Conflicts land as inline markers. Each
-[release](https://github.com/7331/7331-template/releases) lists the steps an update needs by hand.
+[release](https://github.com/7331/python-backend-template/releases) lists the steps an update needs by hand.
 
 ## This repository
 
