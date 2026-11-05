@@ -5,7 +5,8 @@ umask 077
 repository_directory=$(cd "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 deploy_environment_file=${ {{- environment_prefix }}_ENVIRONMENT_FILE:?set {{ environment_prefix }}_ENVIRONMENT_FILE to the deploy .env}
 : "${ {{- environment_prefix }}_POSTGRES_BACKUP_ENVIRONMENT_FILE:?set {{ environment_prefix }}_POSTGRES_BACKUP_ENVIRONMENT_FILE to the backup env file}"
-export {{ environment_prefix }}_ENVIRONMENT_FILE {{ environment_prefix }}_POSTGRES_BACKUP_ENVIRONMENT_FILE
+: "${ {{- environment_prefix }}_DATABASE_OWNER_ENVIRONMENT_FILE:?set {{ environment_prefix }}_DATABASE_OWNER_ENVIRONMENT_FILE to the database owner env file}"
+export {{ environment_prefix }}_ENVIRONMENT_FILE {{ environment_prefix }}_POSTGRES_BACKUP_ENVIRONMENT_FILE {{ environment_prefix }}_DATABASE_OWNER_ENVIRONMENT_FILE
 export POSTGRES_ARCHIVE_MODE=on
 archive_wait_seconds=${POSTGRES_BACKUP_ARCHIVE_WAIT_SECONDS:-180}
 

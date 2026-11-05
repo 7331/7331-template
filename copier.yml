@@ -13,7 +13,7 @@ _tasks:
 _message_after_copy: |
   {{ project_slug }} is ready. Next, cp .env.example .env and fill in:
   {%- if include_postgres %}
-    POSTGRES_PASSWORD: a long random value, also in place of POSTGRES_PASSWORD_HERE in {{ environment_prefix }}_DATABASE_URL.
+    APPLICATION_DATABASE_PASSWORD_HERE in {{ environment_prefix }}_DATABASE_URL: a long random value, the API's own role.
   {%- endif %}
   {%- if include_accounts %}
     {{ environment_prefix }}_ACCOUNTS_PUBLIC_BASE_URL: the origin passkeys are bound to.
@@ -21,6 +21,10 @@ _message_after_copy: |
     {{ environment_prefix }}_TRUSTED_PROXY_ADDRESSES: the reverse proxy's fixed address, when one sits in front.
     REVERSE_PROXY_NETWORK: the reverse proxy's docker network, for deploy/deploy.sh only.
   {%- if include_postgres %}
+  Then cp .env.database-owner.example .env.database-owner and fill in:
+    POSTGRES_PASSWORD: another long random value, also in place of POSTGRES_PASSWORD_HERE in {{ environment_prefix }}_MIGRATION_DATABASE_URL.
+    {{ environment_prefix }}_APPLICATION_DATABASE_PASSWORD: the same value as in {{ environment_prefix }}_DATABASE_URL.
+  Only postgres and migrate read .env.database-owner; the API never sees the superuser password.
   For production, also copy deploy/postgres/backup.env.example outside the checkout (mode 600) and fill in the bucket
   and a new WAL-G key; deploy/deploy.sh refuses to run without it.
   {%- endif %}

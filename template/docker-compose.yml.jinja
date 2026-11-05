@@ -24,10 +24,18 @@ x-backend-environment-file: &backend_environment_file
   env_file:
     - path: ${ {{- environment_prefix }}_ENVIRONMENT_FILE:-.env}
       required: true
+{%- if include_postgres %}
+
+x-database-owner-environment-file: &database_owner_environment_file
+  env_file:
+    - path: ${ {{- environment_prefix }}_DATABASE_OWNER_ENVIRONMENT_FILE:-.env.database-owner}
+      required: true
+{%- endif %}
 
 services:
 {%- if include_postgres %}
   postgres:
+    <<: *database_owner_environment_file
     image: postgres:18-alpine
     restart: unless-stopped
     command:
@@ -68,7 +76,6 @@ services:
     environment:
       POSTGRES_DB: {{ database_name }}
       POSTGRES_USER: {{ database_name }}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     volumes:
       - postgres_data:/var/lib/postgresql
     networks:
@@ -80,7 +87,7 @@ services:
       retries: 30
 
   migrate:
-    <<: [*backend_image, *backend_hardening, *backend_environment_file]
+    <<: [*backend_image, *backend_hardening, *database_owner_environment_file]
     restart: "no"
     command: ["alembic", "upgrade", "head"]
     depends_on:

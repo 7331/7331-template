@@ -119,6 +119,17 @@ class AccountRepository:
 
 Queries name their columns where they select partial rows; never string-format SQL.
 
+### Database roles
+
+The postgres image makes `POSTGRES_USER` a superuser, so the app has two roles:
+
+- **`{{ database_name }}`**, the image's superuser, owns every object. Only `migrate`, the backup scripts and the operator connect as it.
+- **`{{ database_name }}_application`**, the API's role (and any worker's), is `NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`. It has `CONNECT` on the database, `USAGE` on schema `public`, `SELECT, INSERT, UPDATE, DELETE` on its tables and `USAGE, SELECT` on its sequences. It can't create, alter or drop anything: "In PostgreSQL 15 and later, the default configuration" keeps `CREATE` on `public` from `PUBLIC` ([schemas](https://www.postgresql.org/docs/18/ddl-schemas.html#DDL-SCHEMAS-PATTERNS)), and schemas carry no other default grants ([privileges](https://www.postgresql.org/docs/18/ddl-priv.html)). Without superuser it can't run `COPY ... TO PROGRAM` or read server files.
+
+Alembic revision `0003` creates the role when it is missing and grants on the tables and sequences that exist, `alembic_version` among them, which the API's schema check reads. `ALTER DEFAULT PRIVILEGES FOR ROLE {{ database_name }}` covers every table and sequence a later revision creates; it applies only to objects "created in the future" by that role ([ALTER DEFAULT PRIVILEGES](https://www.postgresql.org/docs/18/sql-alterdefaultprivileges.html)), which is why the existing ones get their own `GRANT`. A revision that creates something in another schema, or a function the API calls, grants on it itself.
+
+The role lives in a revision rather than a `/docker-entrypoint-initdb.d` script because that script runs only on an empty data directory, so an app updated over an existing volume would never get the role. Roles are cluster-wide, so a WAL-G restore brings the role back with the base backup either way. A revision can't hold a password, so `migrations/env.py` sets it after every upgrade from `{{ environment_prefix }}_APPLICATION_DATABASE_PASSWORD`: it hashes the password to a SCRAM verifier on the client (libpq's `PQencryptPasswordConn`) and sends only the verifier, so the password never reaches a server log or a command line. Rotating it is a change to both env files and a deploy.
+
 ### Units of work
 
 One session is one transaction is one unit of work: a request, a worker pass or a CLI command. The entry point opens the session and commits or rolls back (`DatabaseSession` in `app/lifespan/dependencies.py` for a request). Services and repositories only `flush`, so two repositories called by one service write atomically. A transaction never spans two databases.
@@ -127,7 +138,7 @@ A write that must be serialised across processes takes `pg_advisory_xact_lock` o
 
 ### Pool budget
 
-Each process holds its own pool, and the sum over every process stays under the server's limit. `max_connections` is 100, set explicitly in `docker-compose.yml` (its default is "typically 100" and it "can only be set at server start", [connections](https://www.postgresql.org/docs/18/runtime-config-connection.html#GUC-MAX-CONNECTIONS)). The API's pool is `API_DATABASE_POOL_SIZE` 10 plus `API_DATABASE_MAXIMUM_OVERFLOW` 5, so it holds at most 15 (`app/lifespan/composition.py`). Add every other process at its own maximum: each worker's pool, the `migrate` run, a CLI command, and the backup scripts' `psql` and `wal-g` sessions. The total stays under 100 minus `superuser_reserved_connections` (3). The app's role is the image's superuser, so those 3 slots don't protect anything from the app. Prefer a smaller pool to a higher `max_connections`: the server sizes shared memory by it, and every extra connection can claim its own `work_mem`.
+Each process holds its own pool, and the sum over every process stays under the server's limit. `max_connections` is 100, set explicitly in `docker-compose.yml` (its default is "typically 100" and it "can only be set at server start", [connections](https://www.postgresql.org/docs/18/runtime-config-connection.html#GUC-MAX-CONNECTIONS)). The API's pool is `API_DATABASE_POOL_SIZE` 10 plus `API_DATABASE_MAXIMUM_OVERFLOW` 5, so it holds at most 15 (`app/lifespan/composition.py`). Add every other process at its own maximum: each worker's pool, the `migrate` run, a CLI command, and the backup scripts' `psql` and `wal-g` sessions. The total stays under 100 minus `superuser_reserved_connections` (3). The API's role is no superuser, so a runaway pool can't take those 3 slots from the operator. Prefer a smaller pool to a higher `max_connections`: the server sizes shared memory by it, and every extra connection can claim its own `work_mem`.
 
 ## Postgres operations
 
@@ -183,10 +194,11 @@ Production archives every WAL segment and takes a full base backup each day, wit
 - **`deploy/postgres/backup_postgres.sh`** checks that `archive_mode` is on, writes a restore point, switches the WAL segment and waits until `pg_stat_archiver` reports it archived, runs `wal-g backup-push`, then `wal-g wal-verify integrity timeline`, and fails on any lost segment. `deploy/deploy.sh` runs it after every deploy, so the first deploy has a base backup and every migration has a fresh one behind it.
 - **`deploy/postgres/verify_postgres_backup_restore.sh`** is the restore drill. It refuses when the newest base backup is older than 26 hours. It counts every table in production, switches the WAL segment and waits for the archive, then starts a throwaway container from the production image on `backend_egress`, the network the archiver reaches the bucket through, with no published port. It runs `wal-g backup-fetch LATEST`, replays the archived WAL with `recovery.signal` and `restore_command`, and promotes ([recovery](https://www.postgresql.org/docs/18/continuous-archiving.html#BACKUP-PITR-RECOVERY)). The copy runs with `archive_mode=off`, so it never pushes into the production prefix. It passes when the copy is out of recovery, its Alembic revision equals production's, and every table's row count is within `POSTGRES_RESTORE_DRILL_ROW_SLACK` (default 10) of production's at the switch. It prints the seconds to a usable database and the last replayed commit, then removes the container and its volume. Production only gets reads, one restore point and one WAL switch.
 
-Restore after losing the host: put back the checkout, the deploy `.env` and the backup env file with the key, then
+Restore after losing the host: put back the checkout, the deploy `.env`, the database owner env file and the backup env file with the key, then
 
 ```sh
-export {{ environment_prefix }}_ENVIRONMENT_FILE=<deploy .env> {{ environment_prefix }}_POSTGRES_BACKUP_ENVIRONMENT_FILE=<backup env file> POSTGRES_ARCHIVE_MODE=on
+export {{ environment_prefix }}_ENVIRONMENT_FILE=<deploy .env> {{ environment_prefix }}_DATABASE_OWNER_ENVIRONMENT_FILE=<database owner env file> \
+  {{ environment_prefix }}_POSTGRES_BACKUP_ENVIRONMENT_FILE=<backup env file> POSTGRES_ARCHIVE_MODE=on
 compose=(docker compose --env-file "${{ environment_prefix }}_ENVIRONMENT_FILE" -f docker-compose.yml -f deploy/docker-compose.production.yml)
 "${compose[@]}" build postgres
 "${compose[@]}" run --rm --no-deps --user postgres --entrypoint sh postgres -c \
@@ -202,7 +214,8 @@ WAL archiving runs inside Postgres and needs no schedule. The base backups and t
 
 ```sh
 systemd-run --scope --unit=tmux-{{ project_slug }} tmux -L {{ project_slug }} new-session -d -s postgres-backups \
-  -e {{ environment_prefix }}_ENVIRONMENT_FILE=<deploy .env> -e {{ environment_prefix }}_POSTGRES_BACKUP_ENVIRONMENT_FILE=<backup env file> \
+  -e {{ environment_prefix }}_ENVIRONMENT_FILE=<deploy .env> -e {{ environment_prefix }}_DATABASE_OWNER_ENVIRONMENT_FILE=<database owner env file> \
+  -e {{ environment_prefix }}_POSTGRES_BACKUP_ENVIRONMENT_FILE=<backup env file> \
   "deploy/postgres/run_postgres_backup_schedule.sh 2>&1 | tee -a <log file>"
 ```
 
@@ -230,14 +243,20 @@ app/infrastructure/<name>_api/
 
 ## Configuration
 
-Every setting lives in a pydantic-settings `BaseSettings` in a `configuration.py`: one per package that has settings, each with its own `env_prefix` (`{{ environment_prefix }}_` for the app, `{{ environment_prefix }}_<PACKAGE>_` for a package{% if include_accounts %}, such as `{{ environment_prefix }}_ACCOUNTS_`{% endif %}). App-wide settings (service identity, {% if include_postgres %}the DSN, {% endif %}trusted proxy addresses, the log level) go in `app/configuration.py`.
+Every setting lives in a pydantic-settings `BaseSettings` in a `configuration.py`: one per package that has settings, each with its own `env_prefix` (`{{ environment_prefix }}_` for the app, `{{ environment_prefix }}_<PACKAGE>_` for a package{% if include_accounts %}, such as `{{ environment_prefix }}_ACCOUNTS_`{% endif %}). App-wide settings (service identity, {% if include_postgres %}the DSNs, {% endif %}trusted proxy addresses, the log level) go in `app/configuration.py`.
 
 - **Non-secret settings carry their default in the class**; the environment only overrides it.
 - **Secrets{% if include_postgres %} and DSNs{% endif %} have no default**, are `SecretStr`{% if include_postgres %} (DSNs also `repr=False`){% endif %}, and a missing one fails at startup.
 - **Each getter is `@lru_cache`** ([FastAPI settings](https://fastapi.tiangolo.com/advanced/settings/#creating-the-settings-only-once-with-lru-cache)).
 - **Services receive settings values by keyword** from the lifespan or a dependency{% if include_accounts %} (`AccountService.on_session(session, relying_party=...)`){% endif %}; they never read settings themselves.
-- **Nothing else reads the environment.** ruff's banned-api refuses `os.environ` and `os.getenv` everywhere{% if include_postgres %}, and `migrations/env.py` takes the DSN from `read_connection_settings()`{% endif %}.
-- **`.env.example` lists every key**, and it is the only other place a key name appears. Compose hands the env file to the backend containers through `env_file:` (`{{ environment_prefix }}_ENVIRONMENT_FILE`, default `.env`) and repeats no key in `environment:`.{% if include_postgres %} The same file feeds compose interpolation, which is how the `POSTGRES_*` keys reach the `postgres` service.{% endif %}
+- **Nothing else reads the environment.** ruff's banned-api refuses `os.environ` and `os.getenv` everywhere{% if include_postgres %}, and `migrations/env.py` takes its DSN from `read_migration_connection_settings()`{% endif %}.
+{%- if include_postgres %}
+- **The example env files list every key**, and they are the only other place a key name appears. Compose repeats no key in `environment:`. Each secret reaches only the containers that use it:
+  - `.env.example` becomes the API's env file (`{{ environment_prefix }}_ENVIRONMENT_FILE`, default `.env`), handed over through `env_file:`. It holds `{{ environment_prefix }}_DATABASE_URL`, the application role's DSN (`ConnectionSettings`), and also feeds compose interpolation.
+  - `.env.database-owner.example` becomes the database owner env file (`{{ environment_prefix }}_DATABASE_OWNER_ENVIRONMENT_FILE`, default `.env.database-owner`), handed only to `postgres` and `migrate`. It holds `POSTGRES_PASSWORD` for the image, and `{{ environment_prefix }}_MIGRATION_DATABASE_URL` and `{{ environment_prefix }}_APPLICATION_DATABASE_PASSWORD` for `migrate` (`MigrationConnectionSettings`). The API never gets the superuser password or the migration DSN.
+{%- else %}
+- **`.env.example` lists every key**, and it is the only other place a key name appears. Compose hands the env file to the backend containers through `env_file:` (`{{ environment_prefix }}_ENVIRONMENT_FILE`, default `.env`) and repeats no key in `environment:`.
+{%- endif %}
 
 ## One resources lifespan
 
@@ -345,7 +364,7 @@ Multi-stage, following [uv's Docker guide](https://docs.astral.sh/uv/guides/inte
 The app runs as Docker Compose on one host: `api`{% if include_postgres %}, `migrate`, `postgres`{% endif %}, behind a reverse proxy (`deploy/Caddyfile`). One image moves between environments; only environment variables differ, and every environment has its own {% if include_postgres %}database and {% endif %}credentials. `deploy/deploy.sh` builds the image from the checkout and starts the stack with `deploy/docker-compose.production.yml`, which joins the reverse proxy's network and sets a `mem_limit` on every service. No rollback: a bad release is fixed forward.
 {%- if include_postgres %}
 
-Production differs from a local run in Postgres only: the `postgres` service runs the image from `deploy/postgres/Dockerfile` (the local image plus WAL-G), archives its WAL (`POSTGRES_ARCHIVE_MODE=on`, exported by `deploy/deploy.sh`), reads the backup env file, joins `backend_egress` to reach the bucket, and gets 60 s to stop so the archiver can push what is left. `deploy/deploy.sh` needs two paths in its environment, `{{ environment_prefix }}_ENVIRONMENT_FILE` and `{{ environment_prefix }}_POSTGRES_BACKUP_ENVIRONMENT_FILE`, and takes a base backup once the stack is up. Postgres operations has the settings, limits, backups and schedule.
+Production differs from a local run in Postgres only: the `postgres` service runs the image from `deploy/postgres/Dockerfile` (the local image plus WAL-G), archives its WAL (`POSTGRES_ARCHIVE_MODE=on`, exported by `deploy/deploy.sh`), reads the backup env file, joins `backend_egress` to reach the bucket, and gets 60 s to stop so the archiver can push what is left. `deploy/deploy.sh` needs three paths in its environment, `{{ environment_prefix }}_ENVIRONMENT_FILE`, `{{ environment_prefix }}_DATABASE_OWNER_ENVIRONMENT_FILE` and `{{ environment_prefix }}_POSTGRES_BACKUP_ENVIRONMENT_FILE`, and takes a base backup once the stack is up. Postgres operations has the settings, limits, backups and schedule.
 {%- endif %}
 
 Every long-running service has:

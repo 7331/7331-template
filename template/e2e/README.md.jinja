@@ -1,7 +1,7 @@
 # e2e
 
 End-to-end flows against a real compose stack, run when a change needs them. Each flow starts its own stack under
-a separate compose project with {% if include_postgres %}a fresh database password and {% endif %}a free local port, checks the running system, prints
+a separate compose project with {% if include_postgres %}fresh passwords for both database roles and {% endif %}a free local port, checks the running system, prints
 one `PASS` or `FAIL` line per assertion, and removes the stack and its volumes, also after a failure.
 
 ```sh

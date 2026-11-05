@@ -36,6 +36,13 @@ class ConnectionSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="{{ environment_prefix }}_", extra="ignore")
 
     database_url: SecretStr = Field(repr=False)
+
+
+class MigrationConnectionSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="{{ environment_prefix }}_", extra="ignore")
+
+    migration_database_url: SecretStr = Field(repr=False)
+    application_database_password: SecretStr = Field(repr=False)
 {%- endif %}
 
 
@@ -49,4 +56,9 @@ def read_application_settings() -> ApplicationSettings:
 @lru_cache
 def read_connection_settings() -> ConnectionSettings:
     return ConnectionSettings()
+
+
+@lru_cache
+def read_migration_connection_settings() -> MigrationConnectionSettings:
+    return MigrationConnectionSettings()
 {%- endif %}

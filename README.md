@@ -22,17 +22,22 @@ Then:
 
 ```sh
 cd my-app
-cp .env.example .env        # with Postgres: fill POSTGRES_PASSWORD and the same password in the DATABASE_URL line
+cp .env.example .env        # with Postgres: the API role's password in the DATABASE_URL line
+cp .env.database-owner.example .env.database-owner   # with Postgres: the superuser and migration credentials
 docker compose up -d --build --wait
 curl http://127.0.0.1:8000/health
 uvx prek run --all-files    # every gate
 ```
 
 Compose reads the env file named by `<PREFIX>_ENVIRONMENT_FILE` (default `.env`), both for its own interpolation
-(`--env-file`) and as the backend containers' `env_file:`. `deploy/deploy.sh` requires it to point at the deploy env
-file, kept outside the checkout with mode 600. With Postgres it also requires
+(`--env-file`) and as the API's `env_file:`. With Postgres, a second file named by
+`<PREFIX>_DATABASE_OWNER_ENVIRONMENT_FILE` (default `.env.database-owner`) holds the superuser password, the
+migration DSN and the API role's password, and only the `postgres` and `migrate` containers read it. The API connects
+as `<database>_application`, a role that can read and write rows but can't create objects or act as a superuser.
+`deploy/deploy.sh` requires `<PREFIX>_ENVIRONMENT_FILE` to point at the deploy env file, kept outside the checkout
+with mode 600. With Postgres it also requires `<PREFIX>_DATABASE_OWNER_ENVIRONMENT_FILE` and
 `<PREFIX>_POSTGRES_BACKUP_ENVIRONMENT_FILE`, the bucket and WAL-G key file made from
-`deploy/postgres/backup.env.example`, also mode 600 and outside the checkout.
+`deploy/postgres/backup.env.example`, both mode 600 and outside the checkout.
 The generated `ARCHITECTURE.md` (Postgres operations) covers the server settings, memory limits, backups, the restore
 drill and how to run the backup schedule.
 
@@ -40,7 +45,7 @@ drill and how to run the backup schedule.
 
 | Question | What it does |
 | --- | --- |
-| `project_slug` | Lowercase name with hyphens (for example `shop-7331`). Names the compose project, the image, the Postgres database and user (hyphens removed), the CLI script, and the API's service name. Its first segment, upper-cased, is the env prefix (`shop-7331` gives `SHOP_`). |
+| `project_slug` | Lowercase name with hyphens (for example `shop-7331`). Names the compose project, the image, the Postgres database and superuser (hyphens removed; the API's role adds `_application`), the CLI script, and the API's service name. Its first segment, upper-cased, is the env prefix (`shop-7331` gives `SHOP_`). |
 | `root_package` | The domain root package under `backend/app/` (for example `shop` or `payments`). Defaults to the slug's first segment. Every domain package goes inside it. |
 | `project_description` | One line, used in `pyproject.toml` and the CLI help. |
 | `include_postgres` | Default yes. Adds `app/infrastructure/postgres/`, Alembic (`alembic.ini`, `migrations/`), the `postgres` and `migrate` compose services, the DSN setting, a request-scoped `DatabaseSession`, a schema check at startup, and `deploy/postgres/` (the production image with WAL-G, the backup script, the restore drill and the backup schedule loop). With it off the app has no database at all. |
@@ -57,6 +62,11 @@ uvx copier update --trust
 (never edit it by hand). It replays the template at the recorded version, diffs it against the newest release tag
 (PEP 440, for example `v0.2.0`), and applies that diff to the app, leaving conflicts as inline markers to resolve.
 Tag every template release.
+
+An app made before the application role existed has its API on the superuser. After the update, create the database
+owner env file: move `POSTGRES_PASSWORD` into it, set `<PREFIX>_MIGRATION_DATABASE_URL` to the old
+`<PREFIX>_DATABASE_URL`, and pick a new `<PREFIX>_APPLICATION_DATABASE_PASSWORD`. Then point `<PREFIX>_DATABASE_URL`
+at `<database>_application` with that password and deploy: `migrate` creates the role and sets its password.
 
 ## Repository layout
 
