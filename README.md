@@ -70,7 +70,7 @@ Tag every template release.
 
 An app made with v0.1.7 or earlier keeps each database password twice, once on its own and once inside a DSN. After
 the update, replace the two URL keys with the password keys: in `.env`, swap `<PREFIX>_DATABASE_URL` for
-`<PREFIX>_APPLICATION_DATABASE_PASSWORD` with the password from that URL; in `.env.database-owner`, delete
+`<PREFIX>_APPLICATION_DATABASE_PASSWORD` with the password from that URL. In `.env.database-owner`, delete
 `<PREFIX>_MIGRATION_DATABASE_URL` and `<PREFIX>_APPLICATION_DATABASE_PASSWORD`, leaving `POSTGRES_PASSWORD`. Then run
 `docker compose up -d --build --wait`. Do the same in the production env files before the next `deploy/deploy.sh`.
 

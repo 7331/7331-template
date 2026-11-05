@@ -24,7 +24,7 @@ _message_after_copy: |
   {%- if include_postgres %}
   Then cp .env.database-owner.example .env.database-owner and fill in:
     POSTGRES_PASSWORD: another long random value, the superuser's.
-  Each password goes in once; the settings build the DSNs from it.
+  Each password goes in once, and the settings build the DSNs from it.
   Only postgres and migrate read .env.database-owner; the API never sees the superuser password.
   For production, also copy deploy/postgres/backup.env.example outside the checkout (mode 600) and fill in the bucket
   and a new WAL-G key; deploy/deploy.sh refuses to run without it.
