@@ -40,7 +40,7 @@ async def open_database(
     file_read_executor: BlockingExecutor,
 ) -> Database:
     database = Database(
-        connection_settings.database_url.get_secret_value(),
+        connection_settings.build_application_database_url().get_secret_value(),
         application_name=f"{application_settings.service_name}-api",
         pool_size=API_DATABASE_POOL_SIZE,
         maximum_overflow=API_DATABASE_MAXIMUM_OVERFLOW,

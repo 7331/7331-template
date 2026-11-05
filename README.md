@@ -24,8 +24,8 @@ Then:
 
 ```sh
 cd my-app
-cp .env.example .env        # with Postgres: the API role's password in the DATABASE_URL line
-cp .env.database-owner.example .env.database-owner   # with Postgres: the superuser and migration credentials
+cp .env.example .env        # with Postgres: the API role's password in APPLICATION_DATABASE_PASSWORD
+cp .env.database-owner.example .env.database-owner   # with Postgres: the superuser's password in POSTGRES_PASSWORD
 docker compose up -d --build --wait
 curl http://127.0.0.1:8000/health
 uvx prek run --all-files    # every gate
@@ -33,9 +33,12 @@ uvx prek run --all-files    # every gate
 
 Compose reads the env file named by `<PREFIX>_ENVIRONMENT_FILE` (default `.env`), both for its own interpolation
 (`--env-file`) and as the API's `env_file:`. With Postgres, a second file named by
-`<PREFIX>_DATABASE_OWNER_ENVIRONMENT_FILE` (default `.env.database-owner`) holds the superuser password, the
-migration DSN and the API role's password, and only the `postgres` and `migrate` containers read it. The API connects
-as `<database>_application`, a role that can read and write rows but can't create objects or act as a superuser.
+`<PREFIX>_DATABASE_OWNER_ENVIRONMENT_FILE` (default `.env.database-owner`) holds `POSTGRES_PASSWORD`, the superuser
+password, and only the `postgres` and `migrate` containers read it. `migrate` reads both files: it connects as the
+superuser and sets the API role's password from `<PREFIX>_APPLICATION_DATABASE_PASSWORD`. Each password appears once,
+and the settings build each DSN from it, with host `postgres` and port 5432 unless `<PREFIX>_DATABASE_HOST` or
+`<PREFIX>_DATABASE_PORT` says otherwise. The API connects as `<database>_application`, a role that can read and write
+rows but can't create objects or act as a superuser.
 `deploy/deploy.sh` requires `<PREFIX>_ENVIRONMENT_FILE` to point at the deploy env file, kept outside the checkout
 with mode 600. With Postgres it also requires `<PREFIX>_DATABASE_OWNER_ENVIRONMENT_FILE` and
 `<PREFIX>_POSTGRES_BACKUP_ENVIRONMENT_FILE`, the bucket and WAL-G key file made from
@@ -50,7 +53,7 @@ drill and how to run the backup schedule.
 | `project_slug` | Lowercase name with hyphens (for example `shop-7331`). Names the compose project, the image, the Postgres database and superuser (hyphens removed; the API's role adds `_application`), the CLI script, and the API's service name. Its first segment, upper-cased, is the env prefix (`shop-7331` gives `SHOP_`). |
 | `root_package` | The domain root package under `backend/app/` (for example `shop` or `payments`). Defaults to the slug's first segment. Every domain package goes inside it. |
 | `project_description` | One line, used in `pyproject.toml` and the CLI help. |
-| `include_postgres` | Default yes. Adds `app/infrastructure/postgres/`, Alembic (`alembic.ini`, `migrations/`), the `postgres` and `migrate` compose services, the DSN setting, a request-scoped `DatabaseSession`, a schema check at startup, and `deploy/postgres/` (the production image with WAL-G, the backup script, the restore drill and the backup schedule loop). With it off the app has no database at all. |
+| `include_postgres` | Default yes. Adds `app/infrastructure/postgres/`, Alembic (`alembic.ini`, `migrations/`), the `postgres` and `migrate` compose services, the database password settings, a request-scoped `DatabaseSession`, a schema check at startup, and `deploy/postgres/` (the production image with WAL-G, the backup script, the restore drill and the backup schedule loop). With it off the app has no database at all. |
 | `include_accounts` | Asked only when `include_postgres` is on, and off without it: accounts keep their tables in Postgres. Default yes. Adds `app/<root>/accounts/`: open sign-up with a username and a passkey, passkey sign-in, cookie sessions, sign-out and `GET /api/v1/me`, its tables in the first migration, and a per-IP budget on passkey writes. |
 
 ## Update an app
@@ -65,13 +68,18 @@ uvx copier update --trust
 (PEP 440, for example `v0.2.0`), and applies that diff to the app, leaving conflicts as inline markers to resolve.
 Tag every template release.
 
+An app made with v0.1.7 or earlier keeps each database password twice, once on its own and once inside a DSN. After
+the update, replace the two URL keys with the password keys: in `.env`, swap `<PREFIX>_DATABASE_URL` for
+`<PREFIX>_APPLICATION_DATABASE_PASSWORD` with the password from that URL; in `.env.database-owner`, delete
+`<PREFIX>_MIGRATION_DATABASE_URL` and `<PREFIX>_APPLICATION_DATABASE_PASSWORD`, leaving `POSTGRES_PASSWORD`. Then run
+`docker compose up -d --build --wait`. Do the same in the production env files before the next `deploy/deploy.sh`.
+
 An app made before v0.1.4 has its API on the superuser. After the update, copy `.env.database-owner.example` to
-`.env.database-owner` (mode 600) and fill it from the old `.env`: move `POSTGRES_PASSWORD` into it, set
-`<PREFIX>_MIGRATION_DATABASE_URL` to the old `<PREFIX>_DATABASE_URL`, and pick a new
-`<PREFIX>_APPLICATION_DATABASE_PASSWORD`. Then point `<PREFIX>_DATABASE_URL` in `.env` at `<database>_application`
-with that password and run `docker compose up -d --build --wait`: `migrate` runs revision `0003`, which creates the
-role, and then sets its password. The data stays. In production, the new file sits beside the deploy env file,
-outside the checkout, and `<PREFIX>_DATABASE_OWNER_ENVIRONMENT_FILE` names it for `deploy/deploy.sh`.
+`.env.database-owner` (mode 600) and move `POSTGRES_PASSWORD` into it from the old `.env`. In `.env`, replace
+`<PREFIX>_DATABASE_URL` with a new `<PREFIX>_APPLICATION_DATABASE_PASSWORD` and run
+`docker compose up -d --build --wait`: `migrate` runs revision `0003`, which creates the role `<database>_application`,
+and then sets its password. The data stays. In production, the new file sits beside the deploy env file, outside the
+checkout, and `<PREFIX>_DATABASE_OWNER_ENVIRONMENT_FILE` names it for `deploy/deploy.sh`.
 
 An app made before v0.1.3 with `include_redis` loses the Redis code, the answer and the compose service in the
 update, but a running stack keeps its `redis` container until `docker compose up -d --remove-orphans`.

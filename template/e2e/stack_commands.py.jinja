@@ -27,26 +27,17 @@ def find_database_owner_environment_file(environment_file: Path) -> Path:
     return environment_file.with_name("e2e.database-owner.env")
 
 
-def write_database_owner_environment_file(environment_file: Path, *, application_database_password: str) -> None:
-    postgres_password = secrets.token_urlsafe(24)
-    environment_lines = [
-        f"POSTGRES_PASSWORD={postgres_password}",
-        f"{{ environment_prefix }}_MIGRATION_DATABASE_URL=postgresql+psycopg://{{ database_name }}:{postgres_password}@postgres:5432/{{ database_name }}",
-        f"{{ environment_prefix }}_APPLICATION_DATABASE_PASSWORD={application_database_password}",
-    ]
+def write_database_owner_environment_file(environment_file: Path) -> None:
     database_owner_environment_file = find_database_owner_environment_file(environment_file)
-    database_owner_environment_file.write_text("\n".join(environment_lines) + "\n")
+    database_owner_environment_file.write_text(f"POSTGRES_PASSWORD={secrets.token_urlsafe(24)}\n")
     database_owner_environment_file.chmod(0o600)
 
 
 {% endif -%}
 def write_stack_environment_file(environment_directory: Path, *, api_publish_port: int) -> Path:
-{%- if include_postgres %}
-    application_database_password = secrets.token_urlsafe(24)
-{%- endif %}
     environment_lines = [
 {%- if include_postgres %}
-        f"{{ environment_prefix }}_DATABASE_URL=postgresql+psycopg://{{ database_name }}_application:{application_database_password}@postgres:5432/{{ database_name }}",
+        f"{{ environment_prefix }}_APPLICATION_DATABASE_PASSWORD={secrets.token_urlsafe(24)}",
 {%- endif %}
 {%- if include_accounts %}
         f"{{ environment_prefix }}_ACCOUNTS_PUBLIC_BASE_URL=http://localhost:{api_publish_port}",
@@ -57,7 +48,7 @@ def write_stack_environment_file(environment_directory: Path, *, api_publish_por
     environment_file.write_text("\n".join(environment_lines) + "\n")
     environment_file.chmod(0o600)
 {%- if include_postgres %}
-    write_database_owner_environment_file(environment_file, application_database_password=application_database_password)
+    write_database_owner_environment_file(environment_file)
 {%- endif %}
     return environment_file
 
