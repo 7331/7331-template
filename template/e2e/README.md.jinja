@@ -1,13 +1,27 @@
 # e2e
 
-End-to-end flows against a real compose stack, run when a change needs them. Each flow starts its own stack under
-a separate compose project with {% if include_postgres %}fresh passwords for both database roles and {% endif %}a free local port, checks the running system, prints
-one `PASS` or `FAIL` line per assertion, and removes the stack and its volumes, also after a failure.
+End-to-end flows against a real compose stack, run by hand when a change needs them. `ARCHITECTURE.md` (Verification)
+has the full rules.
+
+- One flow is one user journey through the public HTTP surface, named `<journey>_flow.py`. No file per endpoint or
+  query, and no SQL fixtures.
+- State comes in through the API. Assertions go through the API too. A read-only `psql` check is allowed only for an
+  invariant the API can't show.
+- Shared code lives in modules named by concern (`stack_commands.py`, `http_client.py`, `flow_report.py`{% if include_accounts %},
+  `software_passkey.py`{% endif %}), never copied between flows.
+- Each flow starts its own stack under a separate compose project with {% if include_postgres %}fresh passwords for both
+  database roles and {% endif %}a free local port, prints one `PASS` or `FAIL` line per assertion, and removes the stack
+  and its volumes, also after a failure. The exit code is 0 only when every assertion passed.
+- A flow is due after a change to its journey, a migration, the compose files or the deploy files. It is never a CI or
+  hook gate. A flow that only pinned old details gets deleted or rewritten.
 
 ```sh
 cd e2e
 uv sync
 uv run python health_flow.py
+{%- if include_accounts %}
+uv run python accounts_flow.py
+{%- endif %}
 ```
 
-The exit code is 0 only when every assertion passed.
+Keep run output outside the repository.

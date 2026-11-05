@@ -308,7 +308,16 @@ An applied revision never changes; a fix is the next revision. Forward only: `do
 
 ## Verification
 
-No unit tests. Verification is running the real system: the flows in `e2e/` start the compose stack and check it from outside, and they run when a change needs them. They are never an automatic gate. Day to day, the gates below are what runs.
+No unit tests. Verification is running the real system: the flows in `e2e/` start the compose stack and check it from outside. Day to day, the gates below are what runs.
+
+- **A flow is one user journey**, start to finish, through the public HTTP surface. It is named `<journey>_flow.py`{% if include_accounts %}, like `accounts_flow.py`: sign up with a passkey, sign out, sign in again{% endif %}.
+- **No file per endpoint, per operation or per query, and no SQL fixture files.** They pin the schema and the implementation, so every migration breaks them. An upsert, for example, is checked inside the journey that submits twice.
+- **Shared code lives in modules named by concern** (`stack_commands.py` starts and stops the stack, `http_client.py` sends requests, `flow_report.py` prints the results{% if include_accounts %}, `software_passkey.py` signs like an authenticator{% endif %}). A flow never copies code from another flow.
+- **State comes in through the API**, never through SQL inserts.
+- **Assertions go through the API.** A `psql` check through `docker compose exec` is allowed only for an invariant the API can't show, such as a row really deleted or a role lacking a privilege. It runs in a read-only transaction and never writes.
+- **Each flow starts its own stack** with fresh secrets on a free port, prints one `PASS` or `FAIL` line per assertion, and exits 0 only when all of them pass. It removes the stack and its volumes even after a failure. Run output goes outside the repository.
+- **When a flow is due:** after a change to its journey's behaviour, a migration, the compose files or the deploy files. Flows run by hand, never as a CI or hook gate.
+- **A flow that only pinned old details** gets deleted or rewritten when a refactor breaks it, never patched around.
 
 ## HTTP API conventions
 

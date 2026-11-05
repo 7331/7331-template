@@ -3,7 +3,15 @@ name = "{{ project_slug }}-e2e"
 version = "0.1.0"
 description = "End-to-end flows of {{ project_slug }} against a running compose stack"
 requires-python = ">=3.15,<3.16"
+{%- if include_accounts %}
+dependencies = [
+    "cbor2==6.1.5",
+    "cryptography==50.0.2",
+    "pydantic==2.14.1",
+]
+{%- else %}
 dependencies = []
+{%- endif %}
 
 [dependency-groups]
 dev = [

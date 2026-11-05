@@ -10,6 +10,9 @@ REPOSITORY_DIRECTORY = Path(__file__).resolve().parent.parent
 E2E_COMPOSE_PROJECT_NAME = "{{ project_slug }}-e2e"
 STACK_START_TIMEOUT_SECONDS = 600
 STACK_STOP_TIMEOUT_SECONDS = 120
+{%- if include_accounts %}
+DATABASE_READ_TIMEOUT_SECONDS = 30
+{%- endif %}
 
 
 class StackCommandFailedError(Exception):
@@ -34,13 +37,19 @@ def write_database_owner_environment_file(environment_file: Path) -> None:
 
 
 {% endif -%}
+{% if include_accounts -%}
+def build_public_base_url(api_publish_port: int) -> str:
+    return f"http://localhost:{api_publish_port}"
+
+
+{% endif -%}
 def write_stack_environment_file(environment_directory: Path, *, api_publish_port: int) -> Path:
     environment_lines = [
 {%- if include_postgres %}
         f"{{ environment_prefix }}_APPLICATION_DATABASE_PASSWORD={secrets.token_urlsafe(24)}",
 {%- endif %}
 {%- if include_accounts %}
-        f"{{ environment_prefix }}_ACCOUNTS_PUBLIC_BASE_URL=http://localhost:{api_publish_port}",
+        f"{{ environment_prefix }}_ACCOUNTS_PUBLIC_BASE_URL={build_public_base_url(api_publish_port)}",
 {%- endif %}
         f"API_PUBLISH_PORT={api_publish_port}",
     ]
@@ -64,7 +73,13 @@ def build_stack_environment(environment_file: Path) -> dict[str, str]:
     }
 
 
-def run_compose(compose_arguments: list[str], *, stack_environment: dict[str, str], timeout_seconds: int) -> str:
+def run_compose(
+    compose_arguments: list[str],
+    *,
+    stack_environment: dict[str, str],
+    timeout_seconds: int,
+    input_text: str | None = None,
+) -> str:
     completed = subprocess.run(
         [
             "docker",
@@ -77,6 +92,7 @@ def run_compose(compose_arguments: list[str], *, stack_environment: dict[str, st
         ],
         cwd=REPOSITORY_DIRECTORY,
         env=stack_environment,
+        input=input_text,
         capture_output=True,
         text=True,
         timeout=timeout_seconds,
@@ -103,3 +119,30 @@ def destroy_stack(stack_environment: dict[str, str]) -> None:
         stack_environment=stack_environment,
         timeout_seconds=STACK_STOP_TIMEOUT_SECONDS,
     )
+{%- if include_accounts %}
+
+
+def read_database_value(sql_query: str, *, stack_environment: dict[str, str]) -> str:
+    return run_compose(
+        [
+            "exec",
+            "-T",
+            "--env",
+            "PGOPTIONS=-c default_transaction_read_only=on",
+            "postgres",
+            "psql",
+            "--no-psqlrc",
+            "--tuples-only",
+            "--no-align",
+            "--set",
+            "ON_ERROR_STOP=1",
+            "--username",
+            "{{ database_name }}",
+            "--dbname",
+            "{{ database_name }}",
+        ],
+        stack_environment=stack_environment,
+        timeout_seconds=DATABASE_READ_TIMEOUT_SECONDS,
+        input_text=sql_query,
+    ).strip()
+{%- endif %}
