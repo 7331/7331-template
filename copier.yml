@@ -1,0 +1,66 @@
+_min_copier_version: "9.4.0"
+_subdirectory: template
+_answers_file: .copier-answers.yml
+_tasks:
+  - command: "[ -d .git ] || git init -b main"
+    when: "{{ _copier_operation == 'copy' }}"
+  - "uv lock --quiet --directory backend"
+  - "uv lock --quiet --directory e2e"
+  - "uv run --quiet --directory backend ruff check --select I --fix --quiet app tools migrations"
+  - "uv run --quiet --directory backend ruff format --quiet app tools migrations"
+  - command: "uvx prek install --hook-type pre-commit --hook-type pre-push"
+    when: "{{ _copier_operation == 'copy' }}"
+_message_after_copy: |
+  {{ project_slug }} is ready. Next, cp .env.example .env and fill in:
+    POSTGRES_PASSWORD: a long random value, also in place of POSTGRES_PASSWORD_HERE in {{ environment_prefix }}_DATABASE_URL.
+  {%- if include_accounts %}
+    {{ environment_prefix }}_ACCOUNTS_PUBLIC_BASE_URL: the origin passkeys are bound to.
+  {%- endif %}
+    {{ environment_prefix }}_TRUSTED_PROXY_ADDRESSES: the reverse proxy's fixed address, when one sits in front.
+    REVERSE_PROXY_NETWORK: the reverse proxy's docker network, for deploy/deploy.sh only.
+  Then: docker compose up -d --build --wait, and commit everything, uv.lock files included.
+
+project_slug:
+  type: str
+  help: Project slug, used for the compose project, image, database and cookie names (for example shop-7331)
+  validator: >-
+    {% if not (project_slug | regex_search('^[a-z][a-z0-9]*(-[a-z0-9]+)*$')) %}
+    lowercase letters, digits and single hyphens, starting with a letter
+    {% endif %}
+
+root_package:
+  type: str
+  help: Domain root package under app/ (for example shop or payments)
+  default: "{{ project_slug.split('-')[0] }}"
+  validator: >-
+    {% if not (root_package | regex_search('^[a-z][a-z0-9_]*$')) %}
+    a Python package name: lowercase letters, digits and underscores, starting with a letter
+    {% endif %}
+    {% if root_package in ['infrastructure', 'lifespan', 'shared', 'main', 'cli', 'log_events'] %}
+    that name is taken by the template's own packages
+    {% endif %}
+
+project_description:
+  type: str
+  help: One-line description
+  default: "{{ project_slug }} backend"
+
+include_accounts:
+  type: bool
+  help: Include passkey accounts (sign-up, sign-in, sessions)
+  default: true
+
+include_redis:
+  type: bool
+  help: Include Redis (a client opened at startup and a redis service in compose)
+  default: false
+
+environment_prefix:
+  type: str
+  default: "{{ project_slug.split('-')[0] | upper }}"
+  when: false
+
+database_name:
+  type: str
+  default: "{{ project_slug | replace('-', '') }}"
+  when: false

@@ -1,0 +1,86 @@
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit, pre-push, manual]
+
+repos:
+  - repo: local
+    hooks:
+      - id: backend-sync
+        name: backend dependencies (locked)
+        entry: uv sync --locked --quiet --project backend
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: backend-format
+        name: ruff format --check (backend)
+        entry: uv run --directory backend ruff format --check app tools migrations
+        language: system
+        pass_filenames: false
+        files: ^backend/
+      - id: backend-lint
+        name: ruff check (backend)
+        entry: uv run --directory backend ruff check app tools migrations
+        language: system
+        pass_filenames: false
+        files: ^backend/
+      - id: backend-types
+        name: ty check (backend)
+        entry: uv run --directory backend ty check app tools
+        language: system
+        pass_filenames: false
+        files: ^backend/
+      - id: backend-house-rules
+        name: semgrep house rules
+        entry: uv run --directory backend python tools/run_house_rules.py
+        language: system
+        pass_filenames: false
+        files: ^backend/
+      - id: backend-import-contracts
+        name: lint-imports
+        entry: uv run --directory backend lint-imports
+        language: system
+        pass_filenames: false
+        files: ^backend/
+      - id: backend-dependencies
+        name: deptry
+        entry: uv run --directory backend deptry .
+        language: system
+        pass_filenames: false
+        files: ^backend/
+      - id: backend-openapi-valid
+        name: OpenAPI document is valid
+        entry: bash -c 'set -euo pipefail; dump_folder="$(mktemp -d)"; trap "rm -rf \"$dump_folder\"" EXIT; uv run --project backend python backend/tools/dump_openapi.py "$dump_folder/openapi.json"; uvx openapi-spec-validator==0.9.0 --schema 3.1 "$dump_folder/openapi.json"'
+        language: system
+        pass_filenames: false
+        files: ^backend/
+      - id: e2e-sync
+        name: e2e dependencies (locked)
+        entry: uv sync --locked --quiet --project e2e
+        language: system
+        pass_filenames: false
+        files: ^e2e/
+      - id: e2e-format
+        name: ruff format --check (e2e)
+        entry: uv run --directory e2e ruff format --check .
+        language: system
+        pass_filenames: false
+        files: ^e2e/
+      - id: e2e-lint
+        name: ruff check (e2e)
+        entry: uv run --directory e2e ruff check .
+        language: system
+        pass_filenames: false
+        files: ^e2e/
+      - id: e2e-types
+        name: ty check (e2e)
+        entry: uv run --directory e2e ty check .
+        language: system
+        pass_filenames: false
+        files: ^e2e/
+      - id: gitleaks
+        name: gitleaks (git history)
+        entry: gitleaks git --redact --verbose --no-banner
+        language: golang
+        language_version: 1.25.4
+        additional_dependencies: [github.com/zricethezav/gitleaks/v8@v8.30.1]
+        pass_filenames: false
+        always_run: true

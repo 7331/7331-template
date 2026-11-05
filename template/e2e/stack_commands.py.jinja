@@ -1,0 +1,88 @@
+import os
+from pathlib import Path
+import secrets
+import socket
+import subprocess
+
+REPOSITORY_DIRECTORY = Path(__file__).resolve().parent.parent
+E2E_COMPOSE_PROJECT_NAME = "{{ project_slug }}-e2e"
+STACK_START_TIMEOUT_SECONDS = 600
+STACK_STOP_TIMEOUT_SECONDS = 120
+
+
+class StackCommandFailedError(Exception):
+    pass
+
+
+def find_free_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe_socket:
+        probe_socket.bind(("127.0.0.1", 0))
+        return probe_socket.getsockname()[1]
+
+
+def write_stack_environment_file(environment_directory: Path, *, api_publish_port: int) -> Path:
+    postgres_password = secrets.token_urlsafe(24)
+    environment_lines = [
+        f"POSTGRES_PASSWORD={postgres_password}",
+        f"{{ environment_prefix }}_DATABASE_URL=postgresql+psycopg://{{ database_name }}:{postgres_password}@postgres:5432/{{ database_name }}",
+{%- if include_redis %}
+        "{{ environment_prefix }}_REDIS_URL=redis://redis:6379/0",
+{%- endif %}
+{%- if include_accounts %}
+        f"{{ environment_prefix }}_ACCOUNTS_PUBLIC_BASE_URL=http://localhost:{api_publish_port}",
+{%- endif %}
+        f"API_PUBLISH_PORT={api_publish_port}",
+    ]
+    environment_file = environment_directory / "e2e.env"
+    environment_file.write_text("\n".join(environment_lines) + "\n")
+    environment_file.chmod(0o600)
+    return environment_file
+
+
+def build_stack_environment(environment_file: Path) -> dict[str, str]:
+    return {
+        "PATH": os.environ["PATH"],
+        "HOME": os.environ.get("HOME", "/"),
+        "{{ environment_prefix }}_ENVIRONMENT_FILE": str(environment_file),
+    }
+
+
+def run_compose(compose_arguments: list[str], *, stack_environment: dict[str, str], timeout_seconds: int) -> str:
+    completed = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--project-name",
+            E2E_COMPOSE_PROJECT_NAME,
+            "--env-file",
+            stack_environment["{{ environment_prefix }}_ENVIRONMENT_FILE"],
+            *compose_arguments,
+        ],
+        cwd=REPOSITORY_DIRECTORY,
+        env=stack_environment,
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise StackCommandFailedError(
+            f"docker compose {compose_arguments[:2]} exited {completed.returncode}: {completed.stderr.strip()[-400:]}"
+        )
+    return completed.stdout
+
+
+def start_stack(stack_environment: dict[str, str]) -> None:
+    run_compose(
+        ["up", "--detach", "--build", "--wait", "--wait-timeout", "300"],
+        stack_environment=stack_environment,
+        timeout_seconds=STACK_START_TIMEOUT_SECONDS,
+    )
+
+
+def destroy_stack(stack_environment: dict[str, str]) -> None:
+    run_compose(
+        ["down", "--volumes", "--remove-orphans"],
+        stack_environment=stack_environment,
+        timeout_seconds=STACK_STOP_TIMEOUT_SECONDS,
+    )

@@ -1,0 +1,320 @@
+# Architecture
+
+The shape of `backend/`: an async Python 3.15 backend on FastAPI, PostgreSQL{% if include_redis %}, Redis{% endif %} and external HTTP APIs, with typed logs, a typer CLI and uv, running as Docker Compose. Each business domain is one package, every external system has one thin layer, and every process (the API, a worker, a CLI command) opens its resources once and passes them down.
+
+The layout follows the per-domain package structure of [fastapi-best-practices](https://github.com/zhanymkanov/fastapi-best-practices), [Polar](https://github.com/polarsource/polar/tree/main/server/polar) and [Netflix Dispatch](https://github.com/Netflix/dispatch/tree/master/src/dispatch), with the repository and service layers from Cosmic Python ([repository](https://www.cosmicpython.com/book/chapter_02_repository.html), [service layer](https://www.cosmicpython.com/book/chapter_04_service_layer.html)).
+
+## The layers
+
+```mermaid
+flowchart TD
+    entry["Entry points: router.py, cli.py, worker loops"] --> service["service.py (the domain API)"]
+    service --> other["lower domains' service.py and read types"]
+    service --> repo["repository.py (Postgres), API clients"]
+    repo --> infra["Infrastructure: app/infrastructure/ (postgres, rate_limit, &lt;name&gt;_api)"]
+    lifespan["app/lifespan: Resources and wiring"] -.opens.-> infra
+    lifespan -.passes Resources and services.-> entry
+```
+
+1. Infrastructure, bound to no domain: the database layer, {% if include_redis %}the Redis client, {% endif %}the rate limiter, and one package per external API (`app/infrastructure/<name>_api/`).
+2. `app/shared/`: domain-free building blocks only (the `AppError` base, the error envelope, logging setup, request helpers, the named blocking executor). `app/configuration.py` beside it holds the app-wide settings.
+3. Domain packages, one per business concept, under `app/{{ root_package }}/`, in one acyclic graph.
+4. `app/lifespan/`: `Resources`, one lifespan per process role, and the wiring between domains.
+5. Entry points that only translate input and output: HTTP routers, CLI commands, worker loops.
+
+The layers are folders, so the tree reads like the diagram:
+
+```
+app/
+  main.py cli.py   process entry points
+  lifespan/        Resources, one lifespan per process role, composition
+  shared/          domain-free building blocks
+  infrastructure/  postgres/ rate_limit/{% if include_redis %} redis/{% endif %} <name>_api/
+  {{ root_package }}/  one package per domain{% if include_accounts %}: accounts/ ...{% endif %}
+```
+
+Inside `infrastructure/` and `{{ root_package }}/` every package is flat: `{{ root_package }}/invoices/` beside `{{ root_package }}/accounts/`, never nested. A big domain splits into sibling packages. Routes and CLI commands stay inside their domain (`router.py` beside `service.py`), so one feature lives in one folder.
+
+Dependencies point down only. A domain never imports a router. Infrastructure never imports a domain. A domain may import a lower domain's service and read types, never in a cycle. import-linter enforces this (`lint-imports`, `[tool.importlinter]` in `backend/pyproject.toml`): a `layers` contract over entry points, middlewares, lifespan, domains, infrastructure and shared, whose domain order also proves there are no cycles between domains{% if include_accounts %}, and a `forbidden` contract that keeps routers, dependencies, CLI commands and entry modules away from every `models` and `repository` module{% endif %}. A new domain takes its place in the `layers` list.
+
+## Data stores
+
+- **PostgreSQL:** the application's own tables, and the source of truth.
+{%- if include_redis %}
+- **Redis:** copies with TTLs and short-lived shared state (see Redis). Never the only copy of anything.
+{%- endif %}
+
+A domain owns its tables. Other domains read them through its service, never with their own SQL. A reference to another domain's row is an id. There is no ORM relationship across domains.
+
+## A domain package
+
+```
+app/{{ root_package }}/<domain>/
+  models.py          SQLAlchemy models for the tables this domain owns
+  schemas.py         Pydantic request and response bodies, only when the domain has a router
+  types.py           read types other domains may use (frozen models)
+  enums.py           closed value sets shared with other domains
+  errors.py          AppError subclasses, only when callers need to tell them apart
+  service.py         <Domain>Service: use cases, the only thing other code calls
+  repository.py      queries for this domain's own tables, no decisions
+  router.py          HTTP routes, thin
+  dependencies.py    request-scoped injection, only when a router needs it
+  sweeps.py          clock-driven passes a worker loop runs, only when the domain has any
+  cli.py             CLI commands for this domain, only when it has any
+  configuration.py   pydantic-settings for this domain, only when it has settings
+  log_events.py      typed log records
+```
+
+A file exists only when something runs, opens, injects, configures or raises through it. An empty file is noise. There is no catch-all `adapters.py`, `utils.py` or `helpers.py`; a file is named after what it implements.
+
+- **Repository:** data access for this domain's tables (`find_account()`, `insert_session()`). Queries only; it decides nothing.
+- **Service:** the use cases. It calls its own repository, API clients and lower domains' services. When it grows, split it by use case into `<feature>_service.py` files inside the domain. It never grows a new layer.
+- **Models:** the package that owns the table or the API owns the model. Other packages never redefine it.
+
+Rules and the reasons for them:
+
+- Code outside the domain calls `service.py`, never the repository. The service is the domain's public API, so storage can move without touching callers.
+- Other domains name a row by a read type from `types.py`. The ORM model stays inside its domain.
+- The service receives what it needs through its constructor, by keyword: `AccountService(repository=..., relying_party=...)`. It never reads `app.state` or module globals, so it works the same in a request, a worker loop and a CLI command. A `classmethod` such as `on_session(session)` builds it for the common case.
+- A service returns typed models. A tuple or dict return is a missing model: a two-part result gets a model with two fields.
+- The service owns domain decisions. Routers and CLI commands parse input, call one service method, and shape the output or error.
+
+### Calling another domain
+
+Down the graph, a service takes the lower domain's service through its constructor. The wiring is written once, in `app/lifespan/`, and routers and CLI commands take services from there.
+
+Up the graph, prefer not to. Two domains that need each other share a third, higher domain that owns the orchestration.
+
+## Postgres
+
+`app/infrastructure/postgres/` holds `Database` (async engine and session factory, with statement, lock and idle-in-transaction timeouts set per connection), the ORM `Base`, the `SurrogateId` and `Timestamps` mixins (a `bigint` identity id; `created_at`, `updated_at` as `timestamptz`) and `build_postgres_enum`.
+
+A repository takes an `AsyncSession` by keyword and holds no business rules:
+
+```python
+class AccountRepository:
+    def __init__(self, *, session: AsyncSession) -> None:
+        self.session = session
+
+    async def find_account(self, account_id: int) -> Account | None:
+        return await self.session.get(Account, account_id)
+```
+
+Queries name their columns where they select partial rows; never string-format SQL.
+
+### Units of work
+
+One session is one transaction is one unit of work: a request, a worker pass or a CLI command. The entry point opens the session and commits or rolls back (`DatabaseSession` in `app/lifespan/dependencies.py` for a request). Services and repositories only `flush`, so two repositories called by one service write atomically. A transaction never spans two databases.
+
+A write that must be serialised across processes takes `pg_advisory_xact_lock` on a named key at the start of its transaction, so the lock ends with the transaction.
+
+### Pool budget
+
+Each process holds its own pool. The sum over every process (the API, each worker, one CLI command) stays under Postgres's `max_connections`.
+{%- if include_redis %}
+
+## Redis
+
+`app/infrastructure/redis/` holds the client and the key builder, so every key has one builder and one prefix.
+
+- **The service decides what is cached**, and invalidates on write in the same method, by deleting the key.
+- **Keys are namespaced** `<prefix>:<namespace>:<version>:<id>` through `build_redis_key`. Bumping the version retires every old entry at once.
+- **Every key has a TTL.** Redis runs with no persistence and `volatile-lru`, so it holds copies only.
+- A cache error is logged and treated as a miss.
+- **No caching library** that hides keys and invalidation behind decorators: the service that writes owns them.
+{%- endif %}
+
+## Connection packages and external HTTP APIs
+
+A connection package owns one external system's configuration and client:
+
+```
+app/infrastructure/<name>_api/
+  configuration.py   base URL, key or credentials (SecretStr), timeouts
+  client.py          <Name>ApiClient: one method per endpoint, typed arguments, returns models
+  schemas.py         request and response bodies as Pydantic models
+  errors.py          <Name>ApiError and the few cases callers handle (NotFound, RateLimited)
+```
+
+- **One `httpx.AsyncClient` per API per process**, opened on the process's `AsyncExitStack`, with `base_url`, default headers and an explicit `httpx.Timeout`.
+- **The client method is the contract.** It maps statuses to exceptions and returns `Model.model_validate(response.json())`. Callers never see `httpx.Response` or raw dicts.
+- **Retries** with [stamina](https://stamina.hynek.me/en/stable/), only on connection errors, 429 and 5xx, only for requests safe to repeat, honouring `Retry-After`. `httpx.AsyncHTTPTransport(retries=n)` retries only connect failures ([transports](https://www.python-httpx.org/advanced/transports/)).
+- **Credentials live in the client**, never in a caller: a static key is a default header; an expiring token is refreshed by one shared task, so parallel callers never refresh twice ([RFC 9700 §4.14.2](https://www.rfc-editor.org/rfc/rfc9700#section-4.14.2)).
+
+`models.py` means SQLAlchemy tables everywhere and `schemas.py` means Pydantic wire shapes everywhere, so an API package's bodies are `schemas.py`.
+
+## Configuration
+
+Every setting lives in a pydantic-settings `BaseSettings` in a `configuration.py`: one per package that has settings, each with its own `env_prefix` (`{{ environment_prefix }}_` for the app, `{{ environment_prefix }}_<PACKAGE>_` for a package{% if include_accounts %}, such as `{{ environment_prefix }}_ACCOUNTS_`{% endif %}). App-wide settings (service identity, the DSNs, trusted proxy addresses, the log level) go in `app/configuration.py`.
+
+- **Non-secret settings carry their default in the class**; the environment only overrides it.
+- **Secrets and DSNs have no default**, are `SecretStr` (DSNs also `repr=False`), and a missing one fails at startup.
+- **Each getter is `@lru_cache`** ([FastAPI settings](https://fastapi.tiangolo.com/advanced/settings/#creating-the-settings-only-once-with-lru-cache)).
+- **Services receive settings values by keyword** from the lifespan or a dependency (`AccountService.on_session(session, relying_party=...)`); they never read settings themselves.
+- **Nothing else reads the environment.** ruff's banned-api refuses `os.environ` and `os.getenv` everywhere, and `migrations/env.py` takes the DSN from `read_application_settings()`.
+- **`.env.example` lists every key**, and it is the only other place a key name appears. Compose hands the env file to the backend containers through `env_file:` (`{{ environment_prefix }}_ENVIRONMENT_FILE`, default `.env`) and repeats no key in `environment:`.
+
+## One resources lifespan
+
+`app/lifespan/resources.py` holds `Resources`, a frozen, typed model, and each process role opens it once with an `AsyncExitStack` (`app/lifespan/composition.py`), so resources close in reverse order even when startup fails halfway. A missing or wrong resource fails at startup, before the first request: the database refuses a schema behind Alembic head{% if include_redis %} and Redis is pinged{% endif %}. Dependencies read it through one typed accessor (`ResourcesDependency`); nothing else reads `app.state`.
+
+## Startup does no work
+
+The API is built by a uvicorn factory (`create_app`, run with `factory=True` by `python -m app serve-api`), so importing `app.main` reads no settings. The API lifespan opens connections and returns. Migrations, seeding, rebuilding derived state and maintenance are deploy steps (the compose `migrate` service) or worker passes, so a restart is fast and the same everywhere.
+
+## Background work
+
+Work outside a request runs in a worker process, never inside the web server. The template ships none; an app that needs one adds `python -m app run-worker` as its own compose service from the same image. The worker opens `Resources` like the API and runs each job as a plain `async` loop: one pass, one transaction, then a sleep, all in one `asyncio.TaskGroup`. A pass that fails is logged and the loop goes on; a loop that dies is logged and ends the process, so compose restarts it.
+
+- **One active worker.** The worker takes a Postgres session advisory lock (`pg_try_advisory_lock`) on startup; a second worker waits and does nothing until the lock frees.
+- **Every pass is idempotent**: it can run twice or be killed halfway without damage. A pass that sends something records the send first.
+- **Passes read current data.** A pass loads what it needs each time, so a restarted worker picks up where the database says.
+- **Shutdown:** SIGTERM cancels the loops, the passes roll back, and `Resources` closes. `stop_grace_period` is longer than the slowest pass.
+
+There is no job queue library. When work must be deferred from a request, the request writes a row in its own transaction and a worker loop picks it up, so the work exists only if the write committed.
+
+## Events and webhooks
+
+A change and the message about it must not drift apart. Use a transactional outbox: write the event in the same transaction as the change, and let a worker send it, so a message is sent "if and only if the database transaction commits"; the consumer must be idempotent ([transactional outbox](https://microservices.io/patterns/data/transactional-outbox.html)).
+
+Receiving a webhook: verify the signature against the raw body and reject old timestamps ([Standard Webhooks](https://www.standardwebhooks.com/)), store the event id and skip repeats, record the work and return `2xx` at once, and never rely on arrival order.
+
+## CLI
+
+One entry point, `python -m app` (and `{{ project_slug }}` in `[project.scripts]`), built on typer. Each process role is a command (`serve-api`, and `run-worker` once there is one). Each domain's commands live in its `cli.py`, added to `app/cli.py`. A command opens only the resources it needs and calls a service.
+
+## Migrations
+
+Alembic owns the schema: one linear history in `backend/migrations/versions/` (`NNNN_<name>.py`), no `create_all`, no hand `ALTER` on a live database. After a model change: `alembic revision --autogenerate`, read the file, then `alembic check` must report nothing.
+
+An applied revision never changes; a fix is the next revision. Forward only: `downgrade()` raises. `create index concurrently` goes in its own revision with `autocommit_block()`. A change to an existing column is expand, then contract once every caller has moved. A new or renamed Postgres enum member is a revision too (`ALTER TYPE ... ADD VALUE` or `RENAME VALUE`).
+
+## Verification
+
+No unit tests. Verification is running the real system: the flows in `e2e/` start the compose stack and check it from outside, and they run when a change needs them. They are never an automatic gate. Day to day, the gates below are what runs.
+
+## HTTP API conventions
+
+- **One error shape.** Every error leaves as `{"error": {"code", "message"}}`. A refusal is an `AppError` subclass with a stable `code` and HTTP status and a message safe to show; validation errors are `validation_error` (400) and rate limits `rate_limited` (429, with `Retry-After`). `app/shared/exception_handlers.py` and `app/unhandled_error_middleware.py` turn every exception into that envelope.
+- **The OpenAPI document is the contract.** `uv run python tools/dump_openapi.py <path>` writes it, with the shared error responses (`ValidationFailed`, `RateLimited`, `ApiError`) on every operation. Clients are built from it.
+- **Pagination** by cursor for lists that grow; offset only for small, bounded lists.
+- **Idempotency keys** on POST routes a client may retry.
+- **Every route has a typed return annotation**, which FastAPI uses as its response model.
+- **Minimal payloads with consistent names.** A field has one name across REST, events and stored payloads.
+- **Request budgets** are an in-memory GCRA in the API process (`app/infrastructure/rate_limit/`, `app/rate_limit_middleware.py`), per client IP. One API replica only: a second replica would double every budget.
+- **Client IP** comes from `X-Real-IP` only when the peer is one of `{{ environment_prefix }}_TRUSTED_PROXY_ADDRESSES`.
+
+## Python and async
+
+**Python 3.15.** One version everywhere: `.python-version`, `requires-python`, ruff's `target-version`, ty and the Dockerfile `FROM` lines, bumped together in one change.
+
+**Async all the way.** Every I/O path is `async`. A library that only blocks is wrapped once, in its infrastructure package, and runs on its own named `BlockingExecutor` (see Runtime defaults). Ruff's `ASYNC` rules catch blocking calls inside `async def`.
+
+- **Parallel calls** go through `asyncio.TaskGroup`: when one fails, the others are cancelled. `asyncio.gather` is banned.
+- **Deadlines** use `async with asyncio.timeout(...)` around the whole operation. `asyncio.wait_for` is banned.
+- **Fire-and-forget** only for best-effort work, keeping a reference to each task: the event loop "only keeps weak references to tasks" ([asyncio tasks](https://docs.python.org/3/library/asyncio-task.html)).
+- **CPU-heavy work** runs in a process pool or a worker, never on the event loop.
+
+## Runtime defaults
+
+- **HTTP JSON:** no custom response class. With a typed return, FastAPI serializes through Pydantic straight to bytes, and it deprecates `ORJSONResponse` and `UJSONResponse` ([custom response](https://fastapi.tiangolo.com/advanced/custom-response/#orjson-or-response-model)). Both are on banned-api.
+- **JSON elsewhere:** Pydantic's `model_validate_json`, `model_dump_json` and `TypeAdapter`. Raw JSON with no model uses [orjson](https://github.com/ijl/orjson) (`tools/dump_openapi.py`). The standard library `json` is on banned-api.
+- **Event loop:** [uvloop](https://pypi.org/project/uvloop/). The API runs under uvicorn with `loop="uvloop"` (`app/cli.py`), and every other async entry point starts with `uvloop.run(main())` (`migrations/env.py`). Event-loop policies are deprecated since Python 3.14 ([asyncio policies](https://docs.python.org/3/library/asyncio-policy.html)), so `asyncio.run`, `asyncio.set_event_loop_policy` and `uvloop.install` are on banned-api.
+- **Blocking work** runs on a named `BlockingExecutor` per kind of work (`app/shared/blocking_executor.py`), opened on the process's `AsyncExitStack` and held on `Resources` (`file_read_executor` reads the Alembic head at startup). The default executor also serves the loop's DNS lookups, so one slow blocking call there stalls name resolution for the whole process. `asyncio.to_thread` is on banned-api.
+- **`lazy import`** ([PEP 810](https://peps.python.org/pep-0810/)) for a heavy module a CLI command or worker only sometimes needs. The template has none yet.
+
+## Gates
+
+One command runs every gate: `uvx prek run --all-files` ([prek](https://github.com/j178/prek) reads `.pre-commit-config.yaml`; the hooks are `repo: local` with `language: system`, so tool versions come from `backend/uv.lock`). Copier installs it as a pre-commit and pre-push hook (`uvx prek install`).
+
+- **uv:** `uv.lock` is committed; the hooks and the image install with `--locked`. `prerelease = "explicit"`.
+- **ruff format and ruff check** (`app tools migrations`): `ALL` (dead code through `F401`, `F841` and `ARG`; complexity through `C901` at `max-complexity = 10`, `PLR0911`, `PLR0912` and `PLR0915`), with `D`, `CPY` and `COM812` off, and `TC001`-`TC003` off because FastAPI and pydantic read annotations at runtime, so type-only imports break routes. Its banned-api list (`[tool.ruff.lint.flake8-tidy-imports.banned-api]`) refuses `typing.cast`, `typing.Any`, `os.environ`, `os.getenv`, `json`, dataclasses, NamedTuple bundles, `requests`, `aiohttp`, `asyncio.gather`, `asyncio.wait_for`, `asyncio.to_thread`, `asyncio.run`, event-loop policies, hand-made decorators, `fastapi.HTTPException`, custom JSON response classes and loggers other than `app.shared.logging`.
+- **ty** (`app tools`, pinned exactly; it is pre-1.0), with the possibly-* rules as errors and `respect-type-ignore-comments = false`.
+- **semgrep** (`semgrep/house-rules.yaml`, over `app` and `migrations`, pinned 1.183.0; the hook fails on any finding and on any parse error in its JSON report, because a file semgrep cannot parse, such as one with `lazy import`, is otherwise skipped silently): the structural rules ruff cannot express: typed log emission, no type dispatch on our own classes, no `isinstance` parsing of JSON, no `model_copy(update=)`, no `from_attributes`, no `include=`/`exclude=` on wire output, `app.state` only through `Resources`, services never keep `Resources`, no underscore-private methods, no `@staticmethod`, no exception text copied into a raised error, closed sets are enums, wire model naming.
+- **lint-imports:** the `layers` contract, an `acyclic_siblings` contract over `app.{{ root_package }}`{% if include_accounts %}, the `forbidden` contracts (routes and entry modules never import a model or repository; models never import FastAPI or Starlette) and one `protected` contract per domain (only `app.{{ root_package }}.accounts` imports its models and repository){% endif %}. A new domain adds its own `protected` contract. Each contract carries `broken_contract_guidance` saying how to fix a break.
+- **deptry:** every dependency is used and every import is declared.
+- **OpenAPI:** `tools/dump_openapi.py` writes the document to a temporary folder and [openapi-spec-validator](https://github.com/python-openapi/openapi-spec-validator) checks it as OpenAPI 3.1.
+- **e2e fast checks:** ruff format, ruff check and ty over `e2e/`.
+- **gitleaks** over the git history.
+
+`alembic check` needs a database, so it is not a hook: after a model change, run `alembic revision --autogenerate` against a running stack, read the file, then `alembic check` must report nothing.
+
+## Container image
+
+Multi-stage, following [uv's Docker guide](https://docs.astral.sh/uv/guides/integration/docker/). Dependencies install before the source is copied, so a code change reuses the dependency layer. The virtualenv is built in a builder stage and copied whole, so a Python bump changes only the `FROM` lines. The container runs as a non-root user, read-only with a small `/tmp`, all capabilities dropped, and starts the venv's binaries directly. One image serves every process (`serve-api`, `alembic upgrade head`, a worker). `Dockerfile.dockerignore` excludes everything the service does not run.
+
+## Environments and running it
+
+The app runs as Docker Compose on one host: `api`, `migrate`, `postgres`{% if include_redis %}, `redis`{% endif %}, behind a reverse proxy (`deploy/Caddyfile`). One image moves between environments; only environment variables differ, and every environment has its own database and credentials. `deploy/deploy.sh` builds the image from the checkout and starts the stack with `deploy/docker-compose.production.yml`, which joins the reverse proxy's network. No rollback: a bad release is fixed forward.
+
+Every long-running service has:
+
+- **One health endpoint.** `/health` returns 200 while the process runs and checks nothing else.
+- **Graceful shutdown.** On SIGTERM the process stops taking work, finishes what is running, then closes resources. `stop_grace_period` is longer than the slowest request or pass.
+- **Limits.** Pools, request body sizes (64 KB at the proxy) and request budgets have explicit maxima.
+
+## Conventions
+
+- Exceptions propagate. Catch only a known error you can name, and turn it into an `AppError` at the boundary. Never forward an internal message to a client.
+- No fallback optionality. A parameter is optional only when the domain has no value for it.
+- No constants or wrappers without a second caller.
+- Models we build ourselves are built with keyword constructors, which ty checks. `model_validate` and `model_validate_json` read data from outside (request bodies, external APIs), never our own rows or objects, so nothing uses `from_attributes`.
+- The response bases are `strict=True`: our own outputs are built with the declared types, so a coerced value is a bug ([strict mode](https://pydantic.dev/docs/validation/latest/concepts/strict_mode/)).
+- No `model_copy(update=...)`: neither ty nor Pydantic checks the update dict. No call-site `include=` or `exclude=` on wire output: a different shape is a different model, as [FastAPI recommends](https://fastapi.tiangolo.com/tutorial/response-model/#response-model-include-and-response-model-exclude).
+- No type dispatch on our own classes: the behaviour lives on the class as a method or property, or Pydantic's discriminator picks the class ([Replace Conditional with Polymorphism](https://refactoring.com/catalog/replaceConditionalWithPolymorphism.html)). An enum's mapping is one property on the enum whose body is a `match` ending in `assert_never`, because ty proves that exhaustive. `assert` is banned (ruff `S101`).
+- Grouped values and collaborator carriers are frozen Pydantic models (`ConfigDict(frozen=True)`, plus `arbitrary_types_allowed=True` when fields are clients or services), like `Resources`.
+- Everything is UTC: timezone-aware `datetime`, `timestamptz` columns, `TZ=UTC` in every process.
+- No comments or docstrings: a name, a type or a smaller function says it. The two exceptions are the reason on a linter suppression and the link to the upstream bug a workaround exists for.
+- No hand-made decorators: the only decorators are the libraries' documented API (`router.get`, typer's `command`, `property`, Pydantic validators, `lru_cache` on settings getters as [FastAPI documents](https://fastapi.tiangolo.com/advanced/settings/#creating-the-settings-only-once-with-lru-cache)).
+- A change that introduces a pattern moves every caller in the same change. Nothing is left half on the old way.
+
+## Logging
+
+Configured once, at the start of every process (`configure_logging` in `app/shared/logging.py`).
+
+- **Output:** unbuffered stdout, JSON in containers, a readable renderer on a terminal. Tracebacks are rendered with quoted values redacted.
+- **Typed events:** `log.emit(logger, event=AccountSignedIn(account_id=...))`. Each event is a `LogEvent` model in the owning package's `log_events.py` with a fixed message and operation; values go in fields, never in the message.
+- **Request context:** a server-minted correlation id goes on every line of a request and back in `X-Request-ID`.
+- **Standard library logs** go through the same processors, so a process writes one format.
+- **Never logged:** secrets, tokens, full request or response bodies, personal data.
+- **One line per request**, written by the request log middleware.
+
+## Naming and explicitness
+
+Code reads like a sentence at the call site: `await account_service.get_account_summary(account_id)`, not `await svc.get(a)`.
+
+- **Keyword-only parameters.** A function takes at most one positional subject besides `self`; everything after it is keyword-only (ruff `PLR0917` with `max-positional-args = 1`). Signatures a library fixes are the exception, each with a reason on the suppression.
+- **Names are long form, whole words**: `configuration`, not `cfg`; `error`, not `e`.
+- **Don't repeat the type** in a name: `accounts`, not `account_list`.
+- **Functions are verb plus object** and say what they return: `get_` returns one thing or raises, `find_` returns one thing or `None`, `list_` returns a list, `count_` an int; `insert_`, `delete_` and `send_` change something.
+- **Wire models put the thing first and the role last.** A request body ends in `Request`; a response ends in `Response` or names its part.
+- **Units in the name** when the type does not carry them: `TIMEOUT_SECONDS`, `max_size_bytes`, `created_at`.
+- **Constants** are `UPPER_SNAKE_CASE`. A constant shared by two domains belongs to the one that owns its meaning.
+- **Closed sets are enums**: no `Literal` with two or more string values.
+- **Namespaced keys** everywhere a string is an identifier: log operations, env variables (`{{ environment_prefix }}_<SETTING>`), {% if include_redis %}Redis keys, {% endif %}cookie names.
+
+## Using the libraries fully
+
+Before writing a helper, check whether the library already does it.
+
+- **FastAPI:** dependencies as `Annotated` aliases, a typed return on every route and no `response_model=` that repeats it (ruff `FAST`), `fastapi.status` constants, `lifespan=`, `APIRouter(prefix=..., tags=[...])` per domain.
+- **Pydantic:** constraints in the type (`Field(gt=0, max_length=200)`, `SecretStr`), `ConfigDict(frozen=True)` for values that must not change, `TypeAdapter` for plain types, `JsonValue` for arbitrary JSON, `model_validate_json` and `model_dump(mode="json")` at the boundaries, discriminated unions instead of type checks.
+- **SQLAlchemy:** `select()` with explicit columns for partial reads, `with_for_update()` for locked reads, bulk `insert().values([...])`, never string-formatted SQL.
+- **httpx:** `base_url`, default headers, `httpx.Timeout`, `httpx.Auth`.
+- **Standard library:** `enum.StrEnum`, `datetime.UTC`, `pathlib.Path`, `asyncio.TaskGroup` and `asyncio.timeout`, `itertools.batched`.
+
+## Reliability habits
+
+- **Fail fast at startup.** Settings validate on load, `Resources` opens every connection before the server accepts traffic, and required settings have no defaults.
+- **Timeouts everywhere:** HTTP clients, `statement_timeout`, `lock_timeout`, idle transactions, {% if include_redis %}Redis calls, {% endif %}each worker pass, and shutdown drains.
+- **Bounded retries** with backoff and jitter, only for errors a retry can fix.
+- **Degrade, don't fall over.** When an optional integration is down, the request still works and the failure is logged.
+
+## Starting a new domain
+
+1. Pick its place in the import-linter `layers` contract; it may import only what sits below it. Add its `protected` contract.
+2. Create `app/{{ root_package }}/<domain>/models.py`, `repository.py`, `service.py`, and `types.py` if other domains read it.
+3. Import its `models` in `migrations/env.py` and add an Alembic revision for its tables.
+4. Add `configuration.py` with its own `env_prefix`, and its keys in `.env.example`, if it has settings.
+5. Add `router.py`, `schemas.py` and `dependencies.py` only when HTTP needs them, `sweeps.py` when a worker runs something for it, `cli.py` when an operator needs it.
+6. Add its wiring in `app/lifespan/`.

@@ -1,0 +1,207 @@
+[project]
+name = "{{ project_slug }}-backend"
+version = "0.1.0"
+description = "{{ project_description }}"
+requires-python = ">=3.15,<3.16"
+dependencies = [
+    "alembic>=1.20.0",
+    "asgi-correlation-id>=5.0.1",
+    "fastapi>=0.143.0",
+    "orjson>=3.11.0",
+    "psycopg[binary]>=3.3.6",
+    "pydantic>=2.14.0",
+    "pydantic-settings>=2.15.0",
+{%- if include_redis %}
+    "redis>=8.1.0",
+{%- endif %}
+    "sqlalchemy[asyncio]>=2.1.4",
+    "starlette>=1.7.0",
+    "structlog>=26.1.0",
+    "typer>=0.27.3",
+    "uvicorn[standard]>=0.54.0",
+    "uvloop>=0.22.0",
+{%- if include_accounts %}
+    "webauthn==3.0.1",
+{%- endif %}
+]
+
+[project.scripts]
+{{ project_slug }} = "app.cli:run_command_line"
+
+[dependency-groups]
+dev = [
+    "deptry>=0.25.1",
+    "import-linter>=2.15",
+    "ruff>=0.17.3",
+    "ty==0.0.97",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.19,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv]
+prerelease = "explicit"
+
+[tool.uv.build-backend]
+module-name = "app"
+module-root = ""
+
+[tool.ruff]
+line-length = 120
+target-version = "py315"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "D",
+    "CPY",
+    "COM812",
+    "E501",
+    "TRY003",
+    "EM101",
+    "EM102",
+    "PLR0913",
+    "PLR2004",
+    "TC001",
+    "TC002",
+    "TC003",
+]
+
+[tool.ruff.lint.pylint]
+max-positional-args = 1
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+force-sort-within-sections = true
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Security", "typer.Option", "typer.Argument"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"typing.cast".msg = "A cast stops the checker. Fix the type, or parse the value at the boundary."
+"typing.Any".msg = "No Any. Use a precise type, pydantic's JsonValue for JSON, or a model."
+"os.environ".msg = "Environment variables are read only by pydantic-settings in a configuration.py."
+"os.getenv".msg = "Environment variables are read only by pydantic-settings in a configuration.py."
+"dataclasses".msg = "Value objects are frozen pydantic models, not dataclasses."
+"typing.NamedTuple".msg = "Grouped values are frozen pydantic models, not NamedTuple bundles."
+"collections.namedtuple".msg = "Grouped values are frozen pydantic models, not namedtuple bundles."
+"requests".msg = "httpx is the one HTTP client."
+"aiohttp".msg = "httpx is the one HTTP client."
+"asyncio.gather".msg = "Use asyncio.TaskGroup: gather does not cancel siblings when one raises."
+"asyncio.wait_for".msg = "Use `async with asyncio.timeout(seconds):`."
+"functools.wraps".msg = "No hand-made decorators: write the wrapped behaviour as a plain call."
+"functools.update_wrapper".msg = "No hand-made decorators: write the wrapped behaviour as a plain call."
+"fastapi.HTTPException".msg = "Raise an AppError subclass; the exception handlers turn it into the one error envelope."
+"structlog.get_logger".msg = "Use app.shared.logging.get_logger."
+"structlog.stdlib.get_logger".msg = "Use app.shared.logging.get_logger."
+"logging.getLogger".msg = "Use app.shared.logging.get_logger."
+"structlog.contextvars.bind_contextvars".msg = "Log values travel as LogEvent fields."
+"structlog.contextvars.bound_contextvars".msg = "Log values travel as LogEvent fields."
+"fastapi.responses.ORJSONResponse".msg = "No custom response class: a typed route return serializes through Pydantic straight to bytes."
+"fastapi.responses.UJSONResponse".msg = "No custom response class: a typed route return serializes through Pydantic straight to bytes."
+"json".msg = "JSON goes through pydantic (model_validate_json, model_dump_json, TypeAdapter); raw JSON with no model uses orjson."
+"asyncio.run".msg = "Start the event loop with uvloop.run(main())."
+"asyncio.set_event_loop_policy".msg = "Event-loop policies are deprecated since 3.14; start the loop with uvloop.run(main())."
+"uvloop.install".msg = "Event-loop policies are deprecated since 3.14; start the loop with uvloop.run(main())."
+"asyncio.to_thread".msg = "Run blocking work on its own named executor (app.shared.blocking_executor), not the default one."
+
+[tool.ruff.lint.per-file-ignores]
+"app/shared/logging.py" = ["TID251"]
+"__init__.py" = ["F401"]
+"migrations/*" = ["INP001"]
+"migrations/**" = ["PLR0917"]
+"tools/*" = ["INP001", "T201", "S607"]
+"app/**/cli.py" = ["PLR0917", "FBT001", "FBT002"]
+"app/cli.py" = ["PLR0917", "FBT001", "FBT002"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.ty.environment]
+python-version = "3.15"
+
+[tool.ty.analysis]
+respect-type-ignore-comments = false
+
+[tool.ty.rules]
+possibly-unresolved-reference = "error"
+possibly-missing-attribute = "error"
+possibly-missing-import = "error"
+unused-ignore-comment = "warn"
+
+[tool.deptry]
+exclude = [".venv", "migrations"]
+
+[tool.deptry.per_rule_ignores]
+DEP002 = ["psycopg", "uvloop"]
+
+[tool.importlinter]
+root_packages = ["app"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Entry points, domains and infrastructure form layers"
+type = "layers"
+containers = ["app"]
+layers = [
+    "cli",
+    "main",
+    "openapi_contract",
+    "rate_limit_middleware | request_log_middleware | unhandled_error_middleware",
+    "lifespan",
+    "log_events",
+{%- if include_accounts %}
+    "{{ root_package }}.accounts",
+{%- else %}
+    "{{ root_package }}",
+{%- endif %}
+    "infrastructure.rate_limit{% if include_redis %} | infrastructure.redis{% endif %}",
+    "infrastructure.postgres",
+    "shared | configuration",
+]
+ignore_imports = [
+    "app.** -> app.lifespan.dependencies",
+    "app.lifespan.dependencies -> app.lifespan.resources",
+]
+broken_contract_guidance = """
+A module imported one that sits above it in `layers`. Move the shared code down, or call the higher module's
+service from an entry point instead. A new domain takes its own place in the list."""
+
+[[tool.importlinter.contracts]]
+name = "Domains under app.{{ root_package }} import each other without cycles"
+type = "acyclic_siblings"
+ancestors = ["app.{{ root_package }}"]
+broken_contract_guidance = """
+Two domains import each other. Let a third, higher domain own the orchestration, or move the shared part down."""
+{%- if include_accounts %}
+
+[[tool.importlinter.contracts]]
+name = "Routes and entry modules never import a model or repository"
+type = "forbidden"
+source_modules = ["app.**.router", "app.**.dependencies", "app.**.cli", "app.main", "app.cli"]
+forbidden_modules = ["app.**.models", "app.**.repository"]
+allow_indirect_imports = "true"
+broken_contract_guidance = """
+Routes, dependencies, CLI commands and entry modules call a service. Add the method to the domain's service."""
+
+[[tool.importlinter.contracts]]
+name = "Models never import transport frameworks"
+type = "forbidden"
+source_modules = ["app.**.models"]
+forbidden_modules = ["fastapi", "starlette"]
+broken_contract_guidance = """
+Models are tables only. Wire shapes go in schemas.py and request handling in router.py or dependencies.py."""
+
+[[tool.importlinter.contracts]]
+name = "Only app.{{ root_package }}.accounts imports its models and repository"
+type = "protected"
+protected_modules = ["app.{{ root_package }}.accounts.models", "app.{{ root_package }}.accounts.repository"]
+allowed_importers = ["app.{{ root_package }}.accounts"]
+broken_contract_guidance = """
+Another package reached into the accounts domain's storage. Call AccountService and use its read types instead."""
+{%- endif %}

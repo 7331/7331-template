@@ -1,0 +1,9 @@
+{{ project_slug }}.example.com {
+	encode zstd gzip
+	request_body {
+		max_size 64KB
+	}
+	reverse_proxy {{ project_slug }}-api:8000 {
+		header_up X-Real-IP {client_ip}
+	}
+}

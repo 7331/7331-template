@@ -1,0 +1,186 @@
+rules:
+  - id: typed-log-emission
+    languages: [python]
+    severity: ERROR
+    message: Emit a LogEvent through app.shared.logging (log.emit, log.exception).
+    paths:
+      exclude:
+        - "**/app/shared/logging.py"
+    patterns:
+      - pattern: $LOGGER.$METHOD(...)
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: ^(debug|info|warning|warn|error|exception|critical|fatal|log|msg)$
+      - pattern-not: app.shared.logging.exception(...)
+      - pattern-not: $TASK.exception()
+
+  - id: typed-log-context
+    languages: [python]
+    severity: ERROR
+    message: Log context is bound only in app/shared/logging.py; values travel as LogEvent fields.
+    paths:
+      exclude:
+        - "**/app/shared/logging.py"
+    patterns:
+      - pattern-either:
+          - pattern: $LOGGER.bind(...)
+          - pattern: $LOGGER.new(...)
+      - pattern-not: hmac.new(...)
+
+  - id: services-never-keep-process-resources
+    languages: [python]
+    severity: ERROR
+    message: Services keep explicit collaborators, never a process's Resources (app/lifespan/resources.py).
+    patterns:
+      - pattern-inside: |
+          class $C:
+            ...
+            def __init__(..., $RESOURCES: $RESOURCES_TYPE, ...):
+              ...
+      - pattern: self.$ATTRIBUTE = $RESOURCES
+      - metavariable-regex:
+          metavariable: $RESOURCES_TYPE
+          regex: ^Resources$
+
+  - id: no-staticmethod
+    languages: [python]
+    severity: ERROR
+    message: A @staticmethod is a module-level function wearing a class as a namespace. Move it out of the class.
+    pattern: |
+      @staticmethod
+      def $F(...): ...
+
+  - id: no-underscore-private-methods
+    languages: [python]
+    severity: ERROR
+    message: No underscore-prefixed method names as a privacy marker.
+    patterns:
+      - pattern: |
+          def $F(self, ...): ...
+      - metavariable-regex:
+          metavariable: $F
+          regex: ^_(?!_).*
+
+  - id: no-exception-text-in-raised-errors
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Never copy an exception's text into another raised error: it may carry submitted values, SQL or library
+      details. Raise a client-safe message and keep the original only as the cause.
+    pattern: raise $ERROR(str($EXCEPTION))
+
+  - id: app-state-through-resources
+    languages: [python]
+    severity: ERROR
+    message: >-
+      A process's clients live on its Resources: read them through app.lifespan.dependencies (ResourcesDependency).
+      Nothing touches app.state, so a missing resource fails the type checker, not a request.
+    paths:
+      exclude:
+        - "**/app/lifespan/dependencies.py"
+    patterns:
+      - pattern: $APP.state
+      - metavariable-regex:
+          metavariable: $APP
+          regex: ^(.*\.)?[a-z_]*(app|application|request)$
+
+  - id: no-model-copy-update
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Build the new value with a keyword constructor. Neither ty nor Pydantic checks a model_copy update dict.
+    pattern: $MODEL.model_copy(..., update=$UPDATE, ...)
+
+  - id: no-include-exclude-on-wire-output
+    languages: [python]
+    severity: ERROR
+    message: >-
+      A different shape is a different model: no call-site include= or exclude= on model_dump or model_dump_json
+      (https://fastapi.tiangolo.com/tutorial/response-model/#response-model-include-and-response-model-exclude).
+    patterns:
+      - pattern-either:
+          - pattern: $MODEL.$DUMP(..., include=$FIELDS, ...)
+          - pattern: $MODEL.$DUMP(..., exclude=$FIELDS, ...)
+      - metavariable-regex:
+          metavariable: $DUMP
+          regex: ^model_dump(_json)?$
+
+  - id: no-isinstance-json-parsing
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Validate outside data into a Pydantic model (model_validate, TypeAdapter) instead of hand-parsing it with
+      isinstance checks on builtins.
+    paths:
+      exclude:
+        - "**/app/shared/logging.py"
+    patterns:
+      - pattern-either:
+          - pattern: isinstance($VALUE, $TYPE)
+          - pattern: isinstance($VALUE, (..., $TYPE, ...))
+      - metavariable-regex:
+          metavariable: $TYPE
+          regex: ^(dict|list|str|int|float|bool|bytes|set|tuple)$
+
+  - id: no-type-dispatch-on-own-classes
+    languages: [python]
+    severity: ERROR
+    message: >-
+      No type dispatch on our own classes: put the behaviour on the class, or let a Pydantic discriminator pick the
+      class (https://refactoring.com/catalog/replaceConditionalWithPolymorphism.html). *Error and *Exception classes
+      are not matched.
+    patterns:
+      - pattern-either:
+          - pattern: isinstance($VALUE, $CLASS)
+          - pattern: isinstance($VALUE, (..., $CLASS, ...))
+      - pattern-either:
+          - patterns:
+              - pattern-inside: |
+                  from $MODULE import $CLASS
+                  ...
+              - metavariable-regex:
+                  metavariable: $MODULE
+                  regex: ^app(\.|$)
+          - pattern-inside: |
+              class $CLASS(...):
+                ...
+              ...
+          - pattern-inside: |
+              $STATEMENT
+              ...
+              class $CLASS(...):
+                ...
+      - metavariable-regex:
+          metavariable: $CLASS
+          regex: ^(?!.*(Error|Exception)$)
+
+  - id: closed-sets-are-enums
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Closed sets are enums: a Literal with two or more string values is a StrEnum. One-value tags and
+      Literal[Enum.MEMBER, ...] subsets stay allowed.
+    pattern-either:
+      - pattern: typing.Literal[..., "$FIRST", ..., "$SECOND", ...]
+      - pattern: typing_extensions.Literal[..., "$FIRST", ..., "$SECOND", ...]
+
+  - id: no-from-attributes
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Build our own models with keyword constructors, which ty checks; from_attributes hides every field from the
+      checker. model_validate reads only outside data.
+    pattern-either:
+      - pattern: ConfigDict(..., from_attributes=$VALUE, ...)
+      - pattern: $MODEL.model_validate(..., from_attributes=$VALUE, ...)
+
+  - id: wire-models-are-named-response-not-view
+    languages: [python]
+    severity: ERROR
+    message: A model a route returns is named <Thing>Response; a nested part is named for the part. Never <Thing>View.
+    patterns:
+      - pattern: |
+          class $MODEL(...): ...
+      - metavariable-regex:
+          metavariable: $MODEL
+          regex: ^.*View$

@@ -1,0 +1,16 @@
+services:
+  api:
+    image: {{ project_slug }}/backend:production
+    ports: !reset []
+    networks:
+      reverse_proxy:
+        aliases:
+          - {{ project_slug }}-api
+
+  migrate:
+    image: {{ project_slug }}/backend:production
+
+networks:
+  reverse_proxy:
+    name: ${REVERSE_PROXY_NETWORK:?REVERSE_PROXY_NETWORK is required}
+    external: true

@@ -1,0 +1,50 @@
+from app.{{ root_package }}.accounts.types import ACCOUNT_SESSION_COOKIE_NAME
+from app.shared.errors import AppError, ConflictError, ForbiddenError, NotFoundError, UnauthorizedError
+
+
+class PasskeyResponseInvalidError(AppError):
+    code = "passkey_response_invalid"
+    status = 400
+
+
+class PasskeyChallengeExpiredError(AppError):
+    code = "passkey_challenge_expired"
+    status = 400
+
+
+class PasskeyAlreadyRegisteredError(ConflictError):
+    code = "passkey_already_registered"
+
+
+class UsernameTakenError(ConflictError):
+    code = "username_taken"
+
+
+class PasskeyUnknownError(UnauthorizedError):
+    code = "passkey_unknown"
+
+
+class AccountSessionExpiredError(UnauthorizedError):
+    pass
+
+
+class SignInRequiredError(UnauthorizedError):
+    pass
+
+
+class OriginMismatchError(ForbiddenError):
+    code = "origin_mismatch"
+
+
+class AccountNotFoundError(NotFoundError):
+    code = "account_not_found"
+
+
+class CookieChallengedUnauthorizedError(UnauthorizedError):
+    response_headers = (
+        ("WWW-Authenticate", f'Cookie realm="{{ project_slug }}", cookie-name="{ACCOUNT_SESSION_COOKIE_NAME}"'),
+    )
+
+    def __init__(self, session_refusal: UnauthorizedError) -> None:
+        super().__init__(session_refusal.message)
+        self.code = session_refusal.code

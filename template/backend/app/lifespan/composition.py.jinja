@@ -1,0 +1,81 @@
+from collections.abc import AsyncGenerator
+from contextlib import AsyncExitStack, asynccontextmanager
+
+from app.configuration import (
+    ApplicationSettings,
+    ConnectionSettings,
+    read_application_settings,
+    read_connection_settings,
+)
+from app.infrastructure.postgres.client import Database
+from app.infrastructure.rate_limit.limiter import InMemoryRateLimiter
+{%- if include_redis %}
+from app.infrastructure.redis.client import RedisClient
+{%- endif %}
+from app.lifespan.resources import Resources
+from app.shared.blocking_executor import BlockingExecutor
+
+API_DATABASE_POOL_SIZE = 10
+API_DATABASE_MAXIMUM_OVERFLOW = 5
+FILE_READ_EXECUTOR_WORKERS = 2
+
+
+def open_file_read_executor(exit_stack: AsyncExitStack) -> BlockingExecutor:
+    file_read_executor = BlockingExecutor(executor_name="file_read", maximum_workers=FILE_READ_EXECUTOR_WORKERS)
+    exit_stack.callback(file_read_executor.close)
+    return file_read_executor
+
+
+async def open_database(
+    exit_stack: AsyncExitStack,
+    *,
+    application_settings: ApplicationSettings,
+    connection_settings: ConnectionSettings,
+    file_read_executor: BlockingExecutor,
+) -> Database:
+    database = Database(
+        connection_settings.database_url.get_secret_value(),
+        application_name=f"{application_settings.service_name}-api",
+        pool_size=API_DATABASE_POOL_SIZE,
+        maximum_overflow=API_DATABASE_MAXIMUM_OVERFLOW,
+    )
+    exit_stack.push_async_callback(database.close)
+    await database.refuse_schema_behind_head(file_read_executor=file_read_executor)
+    return database
+{%- if include_redis %}
+
+
+async def open_redis_client(
+    exit_stack: AsyncExitStack, *, application_settings: ApplicationSettings, connection_settings: ConnectionSettings
+) -> RedisClient:
+    redis_client = RedisClient(
+        connection_settings.redis_url.get_secret_value(), client_name=f"{application_settings.service_name}-api"
+    )
+    exit_stack.push_async_callback(redis_client.close)
+    await redis_client.initialize()
+    return redis_client
+{%- endif %}
+
+
+@asynccontextmanager
+async def open_api_resources() -> AsyncGenerator[Resources]:
+    application_settings = read_application_settings()
+    connection_settings = read_connection_settings()
+    async with AsyncExitStack() as exit_stack:
+        file_read_executor = open_file_read_executor(exit_stack)
+        yield Resources(
+            file_read_executor=file_read_executor,
+            database=await open_database(
+                exit_stack,
+                application_settings=application_settings,
+                connection_settings=connection_settings,
+                file_read_executor=file_read_executor,
+            ),
+{%- if include_redis %}
+            redis_client=await open_redis_client(
+                exit_stack, application_settings=application_settings, connection_settings=connection_settings
+            ),
+{%- endif %}
+            rate_limiter=InMemoryRateLimiter(),
+            trusted_proxy_addresses=application_settings.list_trusted_proxy_addresses(),
+        )

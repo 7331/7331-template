@@ -1,0 +1,101 @@
+name: {{ project_slug }}
+
+x-backend-image: &backend_image
+  build:
+    context: .
+    dockerfile: backend/Dockerfile
+  image: {{ project_slug }}/backend:local
+
+x-backend-hardening: &backend_hardening
+  read_only: true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "5"
+
+x-backend-environment-file: &backend_environment_file
+  env_file:
+    - path: ${ {{- environment_prefix }}_ENVIRONMENT_FILE:-.env}
+      required: true
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: {{ database_name }}
+      POSTGRES_USER: {{ database_name }}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    networks:
+      - backend_data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U {{ database_name }} -d {{ database_name }}"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+{%- if include_redis %}
+
+  redis:
+    image: redis:8
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "volatile-lru"]
+    networks:
+      - backend_data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+{%- endif %}
+
+  migrate:
+    <<: [*backend_image, *backend_hardening, *backend_environment_file]
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - backend_data
+
+  api:
+    <<: [*backend_image, *backend_hardening, *backend_environment_file]
+    restart: unless-stopped
+    command: ["python", "-m", "app", "serve-api"]
+    stop_grace_period: 25s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+{%- if include_redis %}
+      redis:
+        condition: service_healthy
+{%- endif %}
+    ports:
+      - "127.0.0.1:${API_PUBLISH_PORT:-8000}:8000"
+    networks:
+      - backend_data
+      - backend_egress
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+      start_interval: 2s
+
+networks:
+  backend_data:
+    internal: true
+  backend_egress: {}
+
+volumes:
+  postgres_data: {}

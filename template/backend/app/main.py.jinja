@@ -1,0 +1,43 @@
+from fastapi import FastAPI
+
+{% if include_accounts -%}
+from app.{{ root_package }}.accounts.router import accounts_router
+{% endif -%}
+from app.configuration import read_application_settings
+from app.lifespan.api_lifespan import api_lifespan
+from app.openapi_contract import install_openapi_contract, name_operation_after_handler
+from app.rate_limit_middleware import RateLimitRequestsMiddleware
+from app.request_log_middleware import RequestLogMiddleware
+from app.shared.correlation import ServerMintedCorrelationIdMiddleware
+from app.shared.exception_handlers import register_exception_handlers
+from app.shared.logging import configure_logging
+from app.shared.schemas import HealthResponse
+from app.unhandled_error_middleware import UnhandledErrorMiddleware
+
+
+async def read_health() -> HealthResponse:
+    return HealthResponse(status="ok")
+
+
+def create_app() -> FastAPI:
+    application_settings = read_application_settings()
+    configure_logging(application_settings.log_level)
+    application = FastAPI(
+        title=application_settings.service_name,
+        lifespan=api_lifespan,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        generate_unique_id_function=name_operation_after_handler,
+    )
+    application.add_api_route("/health", read_health, methods=["GET", "HEAD"], include_in_schema=False)
+{%- if include_accounts %}
+    application.include_router(accounts_router)
+{%- endif %}
+    application.add_middleware(RateLimitRequestsMiddleware)
+    application.add_middleware(UnhandledErrorMiddleware)
+    application.add_middleware(RequestLogMiddleware)
+    application.add_middleware(ServerMintedCorrelationIdMiddleware)
+    register_exception_handlers(application)
+    install_openapi_contract(application)
+    return application

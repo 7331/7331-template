@@ -1,0 +1,47 @@
+from enum import StrEnum
+from functools import lru_cache
+import ipaddress
+
+from pydantic import Field, SecretStr
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class LogLevel(StrEnum):
+    DEBUG = "DEBUG"
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
+
+
+class ApplicationSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="{{ environment_prefix }}_", extra="ignore")
+
+    service_name: str = "{{ project_slug }}"
+    trusted_proxy_addresses: str = ""
+    log_level: LogLevel = LogLevel.INFO
+
+    def list_trusted_proxy_addresses(self) -> frozenset[str]:
+        return frozenset(
+            str(ipaddress.ip_address(address.strip()))
+            for address in self.trusted_proxy_addresses.split(",")
+            if address.strip()
+        )
+
+
+class ConnectionSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="{{ environment_prefix }}_", extra="ignore")
+
+    database_url: SecretStr = Field(repr=False)
+{%- if include_redis %}
+    redis_url: SecretStr = Field(repr=False)
+{%- endif %}
+
+
+@lru_cache
+def read_application_settings() -> ApplicationSettings:
+    return ApplicationSettings()
+
+
+@lru_cache
+def read_connection_settings() -> ConnectionSettings:
+    return ConnectionSettings()

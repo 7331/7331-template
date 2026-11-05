@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_directory=$(cd "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+deploy_environment_file=${ {{- environment_prefix }}_ENVIRONMENT_FILE:?set {{ environment_prefix }}_ENVIRONMENT_FILE to the deploy .env (mode 600, outside the checkout)}
+export {{ environment_prefix }}_ENVIRONMENT_FILE="$deploy_environment_file"
+
+[[ -f "$deploy_environment_file" ]] || { echo "refusing: $deploy_environment_file does not exist (copy .env.example)" >&2; exit 78; }
+
+compose=(docker compose --env-file "$deploy_environment_file"
+  -f "$repository_directory/docker-compose.yml" -f "$repository_directory/deploy/docker-compose.production.yml")
+
+"${compose[@]}" build --pull
+"${compose[@]}" up -d --wait --wait-timeout 300 --remove-orphans
+"${compose[@]}" ps --format '{{ "{{" }}.Service{{ "}}" }} {{ "{{" }}.Status{{ "}}" }}'
+echo "deployed $(git -C "$repository_directory" rev-parse HEAD)"

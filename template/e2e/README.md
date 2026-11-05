@@ -1,0 +1,15 @@
+# e2e
+
+End-to-end flows against a real compose stack, run when a change needs them. Each flow starts its own stack under
+a separate compose project with a fresh database password and a free local port, checks the running system, prints
+one `PASS` or `FAIL` line per assertion, and removes the stack and its volumes, also after a failure.
+
+```sh
+cd e2e
+uv sync
+uv run python health_flow.py
+```
+
+The exit code is 0 only when every assertion passed.
+
+Fast checks: `uv run ruff format --check .`, `uv run ruff check .`, `uv run ty check .`.
