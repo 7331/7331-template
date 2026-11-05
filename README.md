@@ -63,10 +63,17 @@ uvx copier update --trust
 (PEP 440, for example `v0.2.0`), and applies that diff to the app, leaving conflicts as inline markers to resolve.
 Tag every template release.
 
-An app made before the application role existed has its API on the superuser. After the update, create the database
-owner env file: move `POSTGRES_PASSWORD` into it, set `<PREFIX>_MIGRATION_DATABASE_URL` to the old
-`<PREFIX>_DATABASE_URL`, and pick a new `<PREFIX>_APPLICATION_DATABASE_PASSWORD`. Then point `<PREFIX>_DATABASE_URL`
-at `<database>_application` with that password and deploy: `migrate` creates the role and sets its password.
+An app made before v0.1.4 has its API on the superuser. After the update, copy `.env.database-owner.example` to
+`.env.database-owner` (mode 600) and fill it from the old `.env`: move `POSTGRES_PASSWORD` into it, set
+`<PREFIX>_MIGRATION_DATABASE_URL` to the old `<PREFIX>_DATABASE_URL`, and pick a new
+`<PREFIX>_APPLICATION_DATABASE_PASSWORD`. Then point `<PREFIX>_DATABASE_URL` in `.env` at `<database>_application`
+with that password and run `docker compose up -d --build --wait`: `migrate` runs revision `0003`, which creates the
+role, and then sets its password. The data stays. In production, the new file sits beside the deploy env file,
+outside the checkout, and `<PREFIX>_DATABASE_OWNER_ENVIRONMENT_FILE` names it for `deploy/deploy.sh`.
+
+An app made before v0.1.3 with `include_redis` loses the Redis code, the answer and the compose service in the
+update, but a running stack keeps its `redis` container until `docker compose up -d --remove-orphans`.
+`deploy/deploy.sh` already passes `--remove-orphans`.
 
 ## Repository layout
 
