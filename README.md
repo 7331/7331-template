@@ -22,8 +22,9 @@ uvx prek run --all-files
 `--trust` lets Copier run the setup tasks: `git init`, `uv lock` in `backend/` and `e2e/`, an import sort and format
 pass, a first `backend/openapi.json` and `uvx prek install`. Each app makes and commits its own `uv.lock`.
 
-Fill in the env files before the first `up`. The copy message lists every key. Without Postgres there is no
-`.env.database-owner`. The API reads `.env` and gets only its own database role's password.
+Fill in the env files before the first `up`. The copy message lists the keys that need a value. Without Postgres,
+skip the second `cp`: there is no `.env.database-owner`. The API reads `.env` and gets only its own database role's
+password.
 `.env.database-owner` holds the superuser password, and only the `postgres` and `migrate` containers read it.
 Production keeps both files outside the checkout with mode 600, plus the WAL-G backup file from
 `deploy/postgres/backup.env.example`. `deploy/deploy.sh` refuses to run without them.
