@@ -62,3 +62,5 @@ Tag every template release.
   File and folder names are rendered too, and one that renders empty (an option that is off) is skipped.
 - `.github/workflows/template-check.yml`: on every push and pull request, generates the app with all options on and
   with all off, and runs every gate in each with `uvx prek run --all-files`.
+  A second job audits the workflows and the Dependabot config with [zizmor](https://docs.zizmor.sh/).
+- `.github/dependabot.yml`: weekly updates for the pinned actions, held back 7 days after each release.
