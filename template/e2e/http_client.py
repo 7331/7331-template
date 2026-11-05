@@ -1,21 +1,22 @@
 from collections.abc import Mapping
-from dataclasses import dataclass
-from email.message import Message
 import json
 import urllib.error
 import urllib.request
 
+from pydantic import BaseModel, ConfigDict
+
 REQUEST_TIMEOUT_SECONDS = 5
 
 
-@dataclass(frozen=True, kw_only=True)
-class HttpReply:
+class HttpReply(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     status: int
-    headers: Message
+    set_cookie_headers: tuple[str, ...]
     body: bytes
 
     def find_set_cookie_value(self, cookie_name: str) -> str | None:
-        for set_cookie_header in self.headers.get_all("Set-Cookie") or []:
+        for set_cookie_header in self.set_cookie_headers:
             name, separator, value = set_cookie_header.split(";", 1)[0].partition("=")
             if separator and name.strip() == cookie_name:
                 return value.strip()
@@ -32,9 +33,17 @@ def send_http_request(
             ),
             timeout=REQUEST_TIMEOUT_SECONDS,
         ) as response:
-            return HttpReply(status=response.status, headers=response.headers, body=response.read())
+            return HttpReply(
+                status=response.status,
+                set_cookie_headers=tuple(response.headers.get_all("Set-Cookie") or ()),
+                body=response.read(),
+            )
     except urllib.error.HTTPError as error_response:
-        return HttpReply(status=error_response.code, headers=error_response.headers, body=error_response.read())
+        return HttpReply(
+            status=error_response.code,
+            set_cookie_headers=tuple(error_response.headers.get_all("Set-Cookie") or ()),
+            body=error_response.read(),
+        )
 
 
 def send_json_request(

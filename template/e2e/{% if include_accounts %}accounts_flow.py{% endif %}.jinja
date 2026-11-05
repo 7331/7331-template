@@ -10,12 +10,11 @@ from software_passkey import AuthenticationOptions, RegistrationOptions, Softwar
 from stack_commands import (
     StackCommandFailedError,
     build_public_base_url,
-    build_stack_environment,
     destroy_stack,
     find_free_local_port,
+    prepare_compose_stack,
     read_database_value,
     start_stack,
-    write_stack_environment_file,
 )
 
 API_PREFIX = "/api/v1"
@@ -134,7 +133,7 @@ def sign_out(
     *,
     accounts_api: AccountsApi,
     signed_in_session: SignedInSession,
-    stack_environment: dict[str, str],
+    compose_stack: ComposeStack,
 ) -> None:
     sign_out_reply = accounts_api.post_json(
         "/accounts/sign-out", json_body={}, session_cookie_value=signed_in_session.session_cookie_value
@@ -146,7 +145,7 @@ def sign_out(
         passed=rejected_reply.status == 401,
         detail=str(rejected_reply.status),
     )
-    session_count = read_database_value(COUNT_ACCOUNT_SESSIONS_QUERY, stack_environment=stack_environment)
+    session_count = read_database_value(COUNT_ACCOUNT_SESSIONS_QUERY, compose_stack=compose_stack)
     flow_report.record_check(
         "sign-out deleted the session row", passed=session_count == "0", detail=f"{session_count} session rows left"
     )
@@ -178,7 +177,7 @@ def sign_in(
     return signed_in_session
 
 
-def walk_passkey_journey(flow_report: FlowReport, *, api_publish_port: int, stack_environment: dict[str, str]) -> None:
+def walk_passkey_journey(flow_report: FlowReport, *, api_publish_port: int, compose_stack: ComposeStack) -> None:
     accounts_api = AccountsApi(api_publish_port=api_publish_port)
     passkey = SoftwarePasskey(origin=accounts_api.origin)
     signed_up_session = sign_up(flow_report, accounts_api=accounts_api, passkey=passkey)
@@ -189,7 +188,7 @@ def walk_passkey_journey(flow_report: FlowReport, *, api_publish_port: int, stac
         check_name="current account after sign-up",
     )
     sign_out(
-        flow_report, accounts_api=accounts_api, signed_in_session=signed_up_session, stack_environment=stack_environment
+        flow_report, accounts_api=accounts_api, signed_in_session=signed_up_session, compose_stack=compose_stack
     )
     signed_in_session = sign_in(
         flow_report, accounts_api=accounts_api, passkey=passkey, expected_account=signed_up_session.account
@@ -206,17 +205,16 @@ def run_accounts_flow() -> bool:
     flow_report = FlowReport()
     api_publish_port = find_free_local_port()
     with tempfile.TemporaryDirectory() as environment_directory:
-        environment_file = write_stack_environment_file(Path(environment_directory), api_publish_port=api_publish_port)
-        stack_environment = build_stack_environment(environment_file)
+        compose_stack = prepare_compose_stack(Path(environment_directory), api_publish_port=api_publish_port)
         try:
-            start_stack(stack_environment)
-            walk_passkey_journey(flow_report, api_publish_port=api_publish_port, stack_environment=stack_environment)
+            start_stack(compose_stack)
+            walk_passkey_journey(flow_report, api_publish_port=api_publish_port, compose_stack=compose_stack)
         except StackCommandFailedError as stack_error:
             flow_report.record_check("stack", passed=False, detail=str(stack_error))
         except FlowCheckFailedError:
             pass
         finally:
-            destroy_stack(stack_environment)
+            destroy_stack(compose_stack)
     return flow_report.has_passed()
 
 
