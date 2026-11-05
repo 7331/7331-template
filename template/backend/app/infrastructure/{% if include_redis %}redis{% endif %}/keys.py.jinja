@@ -1,6 +1,0 @@
-KEY_PREFIX = "{{ database_name }}"
-KEY_SEPARATOR = ":"
-
-
-def build_redis_key(namespace: str, *, parts: tuple[str | int, ...]) -> str:
-    return KEY_SEPARATOR.join((KEY_PREFIX, namespace, *(str(part) for part in parts)))

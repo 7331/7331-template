@@ -1,4 +1,5 @@
 from collections.abc import AsyncGenerator
+{% if include_postgres -%}
 from contextlib import AsyncExitStack, asynccontextmanager
 
 from app.configuration import (
@@ -7,12 +8,17 @@ from app.configuration import (
     read_application_settings,
     read_connection_settings,
 )
-from app.infrastructure.postgres.client import Database
-from app.infrastructure.rate_limit.limiter import InMemoryRateLimiter
-{%- if include_redis %}
-from app.infrastructure.redis.client import RedisClient
+{%- else -%}
+from contextlib import asynccontextmanager
+
+from app.configuration import read_application_settings
 {%- endif %}
+{%- if include_postgres %}
+from app.infrastructure.postgres.client import Database
+{%- endif %}
+from app.infrastructure.rate_limit.limiter import InMemoryRateLimiter
 from app.lifespan.resources import Resources
+{%- if include_postgres %}
 from app.shared.blocking_executor import BlockingExecutor
 
 API_DATABASE_POOL_SIZE = 10
@@ -42,24 +48,13 @@ async def open_database(
     exit_stack.push_async_callback(database.close)
     await database.refuse_schema_behind_head(file_read_executor=file_read_executor)
     return database
-{%- if include_redis %}
-
-
-async def open_redis_client(
-    exit_stack: AsyncExitStack, *, application_settings: ApplicationSettings, connection_settings: ConnectionSettings
-) -> RedisClient:
-    redis_client = RedisClient(
-        connection_settings.redis_url.get_secret_value(), client_name=f"{application_settings.service_name}-api"
-    )
-    exit_stack.push_async_callback(redis_client.close)
-    await redis_client.initialize()
-    return redis_client
 {%- endif %}
 
 
 @asynccontextmanager
 async def open_api_resources() -> AsyncGenerator[Resources]:
     application_settings = read_application_settings()
+{%- if include_postgres %}
     connection_settings = read_connection_settings()
     async with AsyncExitStack() as exit_stack:
         file_read_executor = open_file_read_executor(exit_stack)
@@ -71,11 +66,12 @@ async def open_api_resources() -> AsyncGenerator[Resources]:
                 connection_settings=connection_settings,
                 file_read_executor=file_read_executor,
             ),
-{%- if include_redis %}
-            redis_client=await open_redis_client(
-                exit_stack, application_settings=application_settings, connection_settings=connection_settings
-            ),
-{%- endif %}
             rate_limiter=InMemoryRateLimiter(),
             trusted_proxy_addresses=application_settings.list_trusted_proxy_addresses(),
         )
+{%- else %}
+    yield Resources(
+        rate_limiter=InMemoryRateLimiter(),
+        trusted_proxy_addresses=application_settings.list_trusted_proxy_addresses(),
+    )
+{%- endif %}

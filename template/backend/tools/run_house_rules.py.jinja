@@ -17,7 +17,9 @@ SEMGREP_COMMAND = (
     "60",
     "--json",
     "app",
+{%- if include_postgres %}
     "migrations",
+{%- endif %}
 )
 SEMGREP_TIMEOUT_SECONDS = 600
 MESSAGE_PREVIEW_LENGTH = 200

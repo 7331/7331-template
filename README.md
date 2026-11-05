@@ -1,9 +1,9 @@
 # 7331-template
 
 A [Copier](https://copier.readthedocs.io/en/stable/) template that starts a Python backend app with one shape: FastAPI
-on Python 3.15, PostgreSQL through SQLAlchemy and Alembic, typed structlog events, a typer CLI, uv, and Docker
-Compose. It is backend only; the OpenAPI document is the contract for any client. `ARCHITECTURE.md` in the generated
-app describes the rules the code follows.
+on Python 3.15, typed structlog events, a typer CLI, uv, and Docker Compose, with PostgreSQL through SQLAlchemy and
+Alembic unless you turn it off. It is backend only; the OpenAPI document is the contract for any client.
+`ARCHITECTURE.md` in the generated app describes the rules the code follows.
 
 ## Start an app
 
@@ -22,7 +22,7 @@ Then:
 
 ```sh
 cd my-app
-cp .env.example .env        # fill POSTGRES_PASSWORD and the same password in the DATABASE_URL line
+cp .env.example .env        # with Postgres: fill POSTGRES_PASSWORD and the same password in the DATABASE_URL line
 docker compose up -d --build --wait
 curl http://127.0.0.1:8000/health
 uvx prek run --all-files    # every gate
@@ -30,7 +30,11 @@ uvx prek run --all-files    # every gate
 
 Compose reads the env file named by `<PREFIX>_ENVIRONMENT_FILE` (default `.env`), both for its own interpolation
 (`--env-file`) and as the backend containers' `env_file:`. `deploy/deploy.sh` requires it to point at the deploy env
-file, kept outside the checkout with mode 600.
+file, kept outside the checkout with mode 600. With Postgres it also requires
+`<PREFIX>_POSTGRES_BACKUP_ENVIRONMENT_FILE`, the bucket and WAL-G key file made from
+`deploy/postgres/backup.env.example`, also mode 600 and outside the checkout.
+The generated `ARCHITECTURE.md` (Postgres operations) covers the server settings, memory limits, backups, the restore
+drill and how to run the backup schedule.
 
 ## Questions
 
@@ -39,8 +43,8 @@ file, kept outside the checkout with mode 600.
 | `project_slug` | Lowercase name with hyphens (for example `shop-7331`). Names the compose project, the image, the Postgres database and user (hyphens removed), the CLI script, and the API's service name. Its first segment, upper-cased, is the env prefix (`shop-7331` gives `SHOP_`). |
 | `root_package` | The domain root package under `backend/app/` (for example `shop` or `payments`). Defaults to the slug's first segment. Every domain package goes inside it. |
 | `project_description` | One line, used in `pyproject.toml` and the CLI help. |
-| `include_accounts` | Default yes. Adds `app/<root>/accounts/`: open sign-up with a username and a passkey, passkey sign-in, cookie sessions, sign-out and `GET /api/v1/me`, its tables in the first migration, and a per-IP budget on passkey writes. |
-| `include_redis` | Default no. Adds `app/infrastructure/redis/` (a client opened and pinged at startup, a key builder), a `redis` service in compose with no persistence and `volatile-lru`, and the `<PREFIX>_REDIS_URL` setting. |
+| `include_postgres` | Default yes. Adds `app/infrastructure/postgres/`, Alembic (`alembic.ini`, `migrations/`), the `postgres` and `migrate` compose services, the DSN setting, a request-scoped `DatabaseSession`, a schema check at startup, and `deploy/postgres/` (the production image with WAL-G, the backup script, the restore drill and the backup schedule loop). With it off the app has no database at all. |
+| `include_accounts` | Asked only when `include_postgres` is on, and off without it: accounts keep their tables in Postgres. Default yes. Adds `app/<root>/accounts/`: open sign-up with a username and a passkey, passkey sign-in, cookie sessions, sign-out and `GET /api/v1/me`, its tables in the first migration, and a per-IP budget on passkey writes. |
 
 ## Update an app
 
@@ -60,8 +64,9 @@ Tag every template release.
   the workflow out of generated apps.
 - `template/`: the files Copier renders. Only files ending in `.jinja` are rendered; the rest are copied as they are.
   File and folder names are rendered too, and one that renders empty (an option that is off) is skipped.
-- `.github/workflows/template-check.yml`: on every push and pull request, generates the app with all options on and
-  with all off, and runs every gate in each with `uvx prek run --all-files`.
+- `.github/workflows/template-check.yml`: on every push and pull request, generates the app three ways (no
+  Postgres; Postgres without accounts; Postgres with accounts), and runs every gate in each with
+  `uvx prek run --all-files`.
   A second job audits the workflows and the Dependabot config with [zizmor](https://docs.zizmor.sh/).
 - `.github/dependabot.yml`: weekly updates for the pinned actions, held back 7 days after each release.
 - `.github/pull_request_template.md`: the shape of a pull request description. Generated apps get the same file.

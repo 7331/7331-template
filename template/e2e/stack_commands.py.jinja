@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
+{% if include_postgres -%}
 import secrets
+{% endif -%}
 import socket
 import subprocess
 
@@ -21,12 +23,13 @@ def find_free_local_port() -> int:
 
 
 def write_stack_environment_file(environment_directory: Path, *, api_publish_port: int) -> Path:
+{%- if include_postgres %}
     postgres_password = secrets.token_urlsafe(24)
+{%- endif %}
     environment_lines = [
+{%- if include_postgres %}
         f"POSTGRES_PASSWORD={postgres_password}",
         f"{{ environment_prefix }}_DATABASE_URL=postgresql+psycopg://{{ database_name }}:{postgres_password}@postgres:5432/{{ database_name }}",
-{%- if include_redis %}
-        "{{ environment_prefix }}_REDIS_URL=redis://redis:6379/0",
 {%- endif %}
 {%- if include_accounts %}
         f"{{ environment_prefix }}_ACCOUNTS_PUBLIC_BASE_URL=http://localhost:{api_publish_port}",

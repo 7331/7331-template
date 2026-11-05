@@ -12,13 +12,13 @@ repos:
         always_run: true
       - id: backend-format
         name: ruff format --check (backend)
-        entry: uv run --directory backend ruff format --check app tools migrations
+        entry: uv run --directory backend ruff format --check app tools{% if include_postgres %} migrations{% endif %}
         language: system
         pass_filenames: false
         files: ^backend/
       - id: backend-lint
         name: ruff check (backend)
-        entry: uv run --directory backend ruff check app tools migrations
+        entry: uv run --directory backend ruff check app tools{% if include_postgres %} migrations{% endif %}
         language: system
         pass_filenames: false
         files: ^backend/

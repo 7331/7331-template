@@ -2,7 +2,9 @@ from enum import StrEnum
 from functools import lru_cache
 import ipaddress
 
+{% if include_postgres -%}
 from pydantic import Field, SecretStr
+{% endif -%}
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,13 +29,13 @@ class ApplicationSettings(BaseSettings):
             if address.strip()
         )
 
+{%- if include_postgres %}
+
 
 class ConnectionSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="{{ environment_prefix }}_", extra="ignore")
 
     database_url: SecretStr = Field(repr=False)
-{%- if include_redis %}
-    redis_url: SecretStr = Field(repr=False)
 {%- endif %}
 
 
@@ -41,7 +43,10 @@ class ConnectionSettings(BaseSettings):
 def read_application_settings() -> ApplicationSettings:
     return ApplicationSettings()
 
+{%- if include_postgres %}
+
 
 @lru_cache
 def read_connection_settings() -> ConnectionSettings:
     return ConnectionSettings()
+{%- endif %}

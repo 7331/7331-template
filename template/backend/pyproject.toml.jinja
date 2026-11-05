@@ -4,17 +4,20 @@ version = "0.1.0"
 description = "{{ project_description }}"
 requires-python = ">=3.15,<3.16"
 dependencies = [
+{%- if include_postgres %}
     "alembic>=1.20.0",
+{%- endif %}
     "asgi-correlation-id>=5.0.1",
     "fastapi>=0.143.0",
     "orjson>=3.11.0",
+{%- if include_postgres %}
     "psycopg[binary]>=3.3.6",
+{%- endif %}
     "pydantic>=2.14.0",
     "pydantic-settings>=2.15.0",
-{%- if include_redis %}
-    "redis>=8.1.0",
-{%- endif %}
+{%- if include_postgres %}
     "sqlalchemy[asyncio]>=2.1.4",
+{%- endif %}
     "starlette>=1.7.0",
     "structlog>=26.1.0",
     "typer>=0.27.3",
@@ -113,8 +116,10 @@ extend-immutable-calls = ["fastapi.Depends", "fastapi.Security", "typer.Option",
 [tool.ruff.lint.per-file-ignores]
 "app/shared/logging.py" = ["TID251"]
 "__init__.py" = ["F401"]
+{%- if include_postgres %}
 "migrations/*" = ["INP001"]
 "migrations/**" = ["PLR0917"]
+{%- endif %}
 "tools/*" = ["INP001", "T201", "S607"]
 "app/**/cli.py" = ["PLR0917", "FBT001", "FBT002"]
 "app/cli.py" = ["PLR0917", "FBT001", "FBT002"]
@@ -136,10 +141,10 @@ possibly-missing-import = "error"
 unused-ignore-comment = "warn"
 
 [tool.deptry]
-exclude = [".venv", "migrations"]
+exclude = [".venv"{% if include_postgres %}, "migrations"{% endif %}]
 
 [tool.deptry.per_rule_ignores]
-DEP002 = ["psycopg", "uvloop"]
+DEP002 = [{% if include_postgres %}"psycopg", {% endif %}"uvloop"]
 
 [tool.importlinter]
 root_packages = ["app"]
@@ -161,8 +166,10 @@ layers = [
 {%- else %}
     "{{ root_package }}",
 {%- endif %}
-    "infrastructure.rate_limit{% if include_redis %} | infrastructure.redis{% endif %}",
+    "infrastructure.rate_limit",
+{%- if include_postgres %}
     "infrastructure.postgres",
+{%- endif %}
     "shared | configuration",
 ]
 ignore_imports = [

@@ -32,7 +32,7 @@ def get_logger(name: str) -> structlog.stdlib.BoundLogger:
 
 
 UVICORN_LOGGERS: tuple[str, ...] = ("uvicorn", "uvicorn.error", "uvicorn.access")
-NOISY_LOGGERS: tuple[str, ...] = ("sqlalchemy.engine", "watchfiles", "httpx", "httpcore", "asyncio", "uvicorn.access")
+NOISY_LOGGERS: tuple[str, ...] = ({% if include_postgres %}"sqlalchemy.engine", {% endif %}"watchfiles", "httpx", "httpcore", "asyncio", "uvicorn.access")
 
 
 def add_correlation_id(_logger: WrappedLogger, _method_name: str, event_dict: EventDict) -> EventDict:
@@ -52,7 +52,9 @@ def uppercase_level(_logger: WrappedLogger, _method_name: str, event_dict: Event
     return event_dict
 
 
+{% if include_postgres -%}
 DATABASE_DETAIL_PATTERN = re.compile(r"^DETAIL: .*$", re.MULTILINE)
+{% endif -%}
 QUOTED_VALUE_PATTERN = re.compile(r"'(?:[^'\\\n]|\\.)*'|\"(?:[^\"\\\n]|\\.)*\"")
 TRACEBACK_FRAME_LINE_PATTERN = re.compile(r'^\s*File "')
 
@@ -66,7 +68,9 @@ def redact_traceback_line(line: str) -> str:
 def redact_traceback_values(_logger: WrappedLogger, _method_name: str, event_dict: EventDict) -> EventDict:
     rendered = event_dict.get("exception")
     if isinstance(rendered, str):
+{%- if include_postgres %}
         rendered = DATABASE_DETAIL_PATTERN.sub("DETAIL:  [redacted]", rendered)
+{%- endif %}
         event_dict["exception"] = "\n".join(redact_traceback_line(line) for line in rendered.split("\n"))
     return event_dict
 

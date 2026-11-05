@@ -1,8 +1,12 @@
+{% if include_postgres -%}
 from collections.abc import AsyncIterator
+{% endif -%}
 from typing import Annotated
 
 from fastapi import Depends, Request
+{%- if include_postgres %}
 from sqlalchemy.ext.asyncio import AsyncSession
+{%- endif %}
 from starlette.types import Scope
 
 from app.lifespan.resources import Resources
@@ -17,6 +21,7 @@ def get_resources(request: Request) -> Resources:
 
 
 ResourcesDependency = Annotated[Resources, Depends(get_resources)]
+{%- if include_postgres %}
 
 
 async def get_database_session(resources: ResourcesDependency) -> AsyncIterator[AsyncSession]:
@@ -25,3 +30,4 @@ async def get_database_session(resources: ResourcesDependency) -> AsyncIterator[
 
 
 DatabaseSession = Annotated[AsyncSession, Depends(get_database_session, scope="function")]
+{%- endif %}

@@ -6,11 +6,20 @@ deploy_environment_file=${ {{- environment_prefix }}_ENVIRONMENT_FILE:?set {{ en
 export {{ environment_prefix }}_ENVIRONMENT_FILE="$deploy_environment_file"
 
 [[ -f "$deploy_environment_file" ]] || { echo "refusing: $deploy_environment_file does not exist (copy .env.example)" >&2; exit 78; }
+{%- if include_postgres %}
+backup_environment_file=${ {{- environment_prefix }}_POSTGRES_BACKUP_ENVIRONMENT_FILE:?set {{ environment_prefix }}_POSTGRES_BACKUP_ENVIRONMENT_FILE to the backup env file (mode 600, outside the checkout)}
+[[ -f "$backup_environment_file" ]] || { echo "refusing: $backup_environment_file does not exist (copy deploy/postgres/backup.env.example)" >&2; exit 78; }
+[[ "$(stat -c %a "$backup_environment_file")" == 600 ]] || { echo "refusing: $backup_environment_file must be mode 600" >&2; exit 78; }
+export {{ environment_prefix }}_POSTGRES_BACKUP_ENVIRONMENT_FILE="$backup_environment_file" POSTGRES_ARCHIVE_MODE=on
+{%- endif %}
 
 compose=(docker compose --env-file "$deploy_environment_file"
   -f "$repository_directory/docker-compose.yml" -f "$repository_directory/deploy/docker-compose.production.yml")
 
 "${compose[@]}" build --pull
 "${compose[@]}" up -d --wait --wait-timeout 300 --remove-orphans
+{%- if include_postgres %}
+"$repository_directory/deploy/postgres/backup_postgres.sh"
+{%- endif %}
 "${compose[@]}" ps --format '{{ "{{" }}.Service{{ "}}" }} {{ "{{" }}.Status{{ "}}" }}'
 echo "deployed $(git -C "$repository_directory" rev-parse HEAD)"

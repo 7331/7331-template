@@ -1,6 +1,6 @@
 # Architecture
 
-The shape of `backend/`: an async Python 3.15 backend on FastAPI, PostgreSQL{% if include_redis %}, Redis{% endif %} and external HTTP APIs, with typed logs, a typer CLI and uv, running as Docker Compose. Each business domain is one package, every external system has one thin layer, and every process (the API, a worker, a CLI command) opens its resources once and passes them down.
+The shape of `backend/`: an async Python 3.15 backend on FastAPI{% if include_postgres %}, PostgreSQL{% endif %} and external HTTP APIs, with typed logs, a typer CLI and uv, running as Docker Compose. Each business domain is one package, every external system has one thin layer, and every process (the API, a worker, a CLI command) opens its resources once and passes them down.
 
 The layout follows the per-domain package structure of [fastapi-best-practices](https://github.com/zhanymkanov/fastapi-best-practices), [Polar](https://github.com/polarsource/polar/tree/main/server/polar) and [Netflix Dispatch](https://github.com/Netflix/dispatch/tree/master/src/dispatch), with the repository and service layers from Cosmic Python ([repository](https://www.cosmicpython.com/book/chapter_02_repository.html), [service layer](https://www.cosmicpython.com/book/chapter_04_service_layer.html)).
 
@@ -10,14 +10,18 @@ The layout follows the per-domain package structure of [fastapi-best-practices](
 flowchart TD
     entry["Entry points: router.py, cli.py, worker loops"] --> service["service.py (the domain API)"]
     service --> other["lower domains' service.py and read types"]
+{%- if include_postgres %}
     service --> repo["repository.py (Postgres), API clients"]
     repo --> infra["Infrastructure: app/infrastructure/ (postgres, rate_limit, &lt;name&gt;_api)"]
+{%- else %}
+    service --> infra["Infrastructure: app/infrastructure/ (rate_limit, &lt;name&gt;_api clients)"]
+{%- endif %}
     lifespan["app/lifespan: Resources and wiring"] -.opens.-> infra
     lifespan -.passes Resources and services.-> entry
 ```
 
-1. Infrastructure, bound to no domain: the database layer, {% if include_redis %}the Redis client, {% endif %}the rate limiter, and one package per external API (`app/infrastructure/<name>_api/`).
-2. `app/shared/`: domain-free building blocks only (the `AppError` base, the error envelope, logging setup, request helpers, the named blocking executor). `app/configuration.py` beside it holds the app-wide settings.
+1. Infrastructure, bound to no domain: {% if include_postgres %}the database layer, {% endif %}the rate limiter, and one package per external API (`app/infrastructure/<name>_api/`).
+2. `app/shared/`: domain-free building blocks only (the `AppError` base, the error envelope, logging setup, request helpers{% if include_postgres %}, the named blocking executor{% endif %}). `app/configuration.py` beside it holds the app-wide settings.
 3. Domain packages, one per business concept, under `app/{{ root_package }}/`, in one acyclic graph.
 4. `app/lifespan/`: `Resources`, one lifespan per process role, and the wiring between domains.
 5. Entry points that only translate input and output: HTTP routers, CLI commands, worker loops.
@@ -29,7 +33,7 @@ app/
   main.py cli.py   process entry points
   lifespan/        Resources, one lifespan per process role, composition
   shared/          domain-free building blocks
-  infrastructure/  postgres/ rate_limit/{% if include_redis %} redis/{% endif %} <name>_api/
+  infrastructure/  {% if include_postgres %}postgres/ {% endif %}rate_limit/ <name>_api/
   {{ root_package }}/  one package per domain{% if include_accounts %}: accounts/ ...{% endif %}
 ```
 
@@ -38,25 +42,29 @@ Inside `infrastructure/` and `{{ root_package }}/` every package is flat: `{{ ro
 Dependencies point down only. A domain never imports a router. Infrastructure never imports a domain. A domain may import a lower domain's service and read types, never in a cycle. import-linter enforces this (`lint-imports`, `[tool.importlinter]` in `backend/pyproject.toml`): a `layers` contract over entry points, middlewares, lifespan, domains, infrastructure and shared, whose domain order also proves there are no cycles between domains{% if include_accounts %}, and a `forbidden` contract that keeps routers, dependencies, CLI commands and entry modules away from every `models` and `repository` module{% endif %}. A new domain takes its place in the `layers` list.
 
 ## Data stores
-
-- **PostgreSQL:** the application's own tables, and the source of truth.
-{%- if include_redis %}
-- **Redis:** copies with TTLs and short-lived shared state (see Redis). Never the only copy of anything.
-{%- endif %}
+{% if include_postgres %}
+PostgreSQL is the only store: the application's own tables, and the source of truth.
 
 A domain owns its tables. Other domains read them through its service, never with their own SQL. A reference to another domain's row is an id. There is no ORM relationship across domains.
+{%- else %}
+The app keeps no state of its own. It has no database, and the request budgets live in the API process's memory, so a restart clears them.
+{%- endif %}
 
 ## A domain package
 
 ```
 app/{{ root_package }}/<domain>/
+{%- if include_postgres %}
   models.py          SQLAlchemy models for the tables this domain owns
+{%- endif %}
   schemas.py         Pydantic request and response bodies, only when the domain has a router
   types.py           read types other domains may use (frozen models)
   enums.py           closed value sets shared with other domains
   errors.py          AppError subclasses, only when callers need to tell them apart
   service.py         <Domain>Service: use cases, the only thing other code calls
+{%- if include_postgres %}
   repository.py      queries for this domain's own tables, no decisions
+{%- endif %}
   router.py          HTTP routes, thin
   dependencies.py    request-scoped injection, only when a router needs it
   sweeps.py          clock-driven passes a worker loop runs, only when the domain has any
@@ -67,15 +75,22 @@ app/{{ root_package }}/<domain>/
 
 A file exists only when something runs, opens, injects, configures or raises through it. An empty file is noise. There is no catch-all `adapters.py`, `utils.py` or `helpers.py`; a file is named after what it implements.
 
+{%- if include_postgres %}
 - **Repository:** data access for this domain's tables (`find_account()`, `insert_session()`). Queries only; it decides nothing.
-- **Service:** the use cases. It calls its own repository, API clients and lower domains' services. When it grows, split it by use case into `<feature>_service.py` files inside the domain. It never grows a new layer.
-- **Models:** the package that owns the table or the API owns the model. Other packages never redefine it.
+{%- endif %}
+- **Service:** the use cases. It calls {% if include_postgres %}its own repository, {% endif %}API clients and lower domains' services. When it grows, split it by use case into `<feature>_service.py` files inside the domain. It never grows a new layer.
+- **Models:** the package that owns the {% if include_postgres %}table or the {% endif %}API owns the model. Other packages never redefine it.
 
 Rules and the reasons for them:
 
+{%- if include_postgres %}
 - Code outside the domain calls `service.py`, never the repository. The service is the domain's public API, so storage can move without touching callers.
 - Other domains name a row by a read type from `types.py`. The ORM model stays inside its domain.
-- The service receives what it needs through its constructor, by keyword: `AccountService(repository=..., relying_party=...)`. It never reads `app.state` or module globals, so it works the same in a request, a worker loop and a CLI command. A `classmethod` such as `on_session(session)` builds it for the common case.
+{%- else %}
+- Code outside the domain calls `service.py`. The service is the domain's public API.
+- Other domains read a domain's data through a read type from `types.py`.
+{%- endif %}
+- The service receives what it needs through its constructor, by keyword{% if include_accounts %}: `AccountService(repository=..., relying_party=...)`{% endif %}. It never reads `app.state` or module globals, so it works the same in a request, a worker loop and a CLI command. {% if include_postgres %}A `classmethod` such as `on_session(session)` builds it for the common case.{% else %}A `classmethod` builds it for the common case.{% endif %}
 - A service returns typed models. A tuple or dict return is a missing model: a two-part result gets a model with two fields.
 - The service owns domain decisions. Routers and CLI commands parse input, call one service method, and shape the output or error.
 
@@ -84,6 +99,8 @@ Rules and the reasons for them:
 Down the graph, a service takes the lower domain's service through its constructor. The wiring is written once, in `app/lifespan/`, and routers and CLI commands take services from there.
 
 Up the graph, prefer not to. Two domains that need each other share a third, higher domain that owns the orchestration.
+
+{%- if include_postgres %}
 
 ## Postgres
 
@@ -110,18 +127,86 @@ A write that must be serialised across processes takes `pg_advisory_xact_lock` o
 
 ### Pool budget
 
-Each process holds its own pool. The sum over every process (the API, each worker, one CLI command) stays under Postgres's `max_connections`.
-{%- if include_redis %}
+Each process holds its own pool, and the sum over every process stays under the server's limit. `max_connections` is 100, set explicitly in `docker-compose.yml` (its default is "typically 100" and it "can only be set at server start", [connections](https://www.postgresql.org/docs/18/runtime-config-connection.html#GUC-MAX-CONNECTIONS)). The API's pool is `API_DATABASE_POOL_SIZE` 10 plus `API_DATABASE_MAXIMUM_OVERFLOW` 5, so it holds at most 15 (`app/lifespan/composition.py`). Add every other process at its own maximum: each worker's pool, the `migrate` run, a CLI command, and the backup scripts' `psql` and `wal-g` sessions. The total stays under 100 minus `superuser_reserved_connections` (3). The app's role is the image's superuser, so those 3 slots don't protect anything from the app. Prefer a smaller pool to a higher `max_connections`: the server sizes shared memory by it, and every extra connection can claim its own `work_mem`.
 
-## Redis
+## Postgres operations
 
-`app/infrastructure/redis/` holds the client and the key builder, so every key has one builder and one prefix.
+### Server settings
 
-- **The service decides what is cached**, and invalidates on write in the same method, by deleting the key.
-- **Keys are namespaced** `<prefix>:<namespace>:<version>:<id>` through `build_redis_key`. Bumping the version retires every old entry at once.
-- **Every key has a TTL.** Redis runs with no persistence and `volatile-lru`, so it holds copies only.
-- A cache error is logged and treated as a miss.
-- **No caching library** that hides keys and invalidation behind decorators: the service that writes owns them.
+The `postgres` service starts the server with explicit `-c` flags in `docker-compose.yml`, so every environment runs the same settings and `SHOW <setting>` proves what is live. Every value below was checked against the PostgreSQL 18 manual.
+
+| Setting | Value | PG18 default | Why |
+| --- | --- | --- | --- |
+| `shared_preload_libraries` | `pg_stat_statements` | empty | The module "must be loaded by adding `pg_stat_statements` to `shared_preload_libraries`", because it needs shared memory; a change needs a restart ([pg_stat_statements](https://www.postgresql.org/docs/18/pgstatstatements.html)). Query ids are computed because `compute_query_id` defaults to `auto`, which lets the module turn it on ([statistics](https://www.postgresql.org/docs/18/runtime-config-statistics.html#GUC-COMPUTE-QUERY-ID)). Alembic revision `0002` runs `CREATE EXTENSION IF NOT EXISTS pg_stat_statements`, since the view exists only in a database that created the extension. |
+| `max_connections` | `100` | typically 100 | See Pool budget. |
+| `shared_buffers` | `POSTGRES_SHARED_BUFFERS`, default `256MB` | `128MB` | "A reasonable starting value for `shared_buffers` is 25% of the memory in your system", and above 40% is unlikely to help ([resources](https://www.postgresql.org/docs/18/runtime-config-resource.html#GUC-SHARED-BUFFERS)). 256 MB is a quarter of the production container's 1 GB limit. |
+| `effective_cache_size` | `POSTGRES_EFFECTIVE_CACHE_SIZE`, default `768MB` | `4GB` | A planner estimate of shared buffers plus the kernel's cache; it allocates nothing ([query planning](https://www.postgresql.org/docs/18/runtime-config-query.html#GUC-EFFECTIVE-CACHE-SIZE)). The 4 GB default assumes more memory than the container has, so it is set to the limit minus `shared_buffers`. |
+| `work_mem` | `POSTGRES_WORK_MEM`, default `8MB` | `4MB` | Per sort or hash operation, before spilling to temp files. "The total memory used could be many times the value of `work_mem`": several operations per query, several sessions, and hash operations get `hash_mem_multiplier` (2.0) times as much ([resources](https://www.postgresql.org/docs/18/runtime-config-resource.html#GUC-WORK-MEM)). |
+| `maintenance_work_mem` | `POSTGRES_MAINTENANCE_WORK_MEM`, default `64MB` | `64MB` | `VACUUM`, `CREATE INDEX`, `ALTER TABLE ADD FOREIGN KEY`; each autovacuum worker uses it too, because `autovacuum_work_mem` defaults to -1 ([resources](https://www.postgresql.org/docs/18/runtime-config-resource.html#GUC-MAINTENANCE-WORK-MEM)). Explicit so it moves with the other three. |
+| `log_min_duration_statement` | `500ms` | `-1` (off) | Logs every statement that ran at least that long, the slow-query log ([logging](https://www.postgresql.org/docs/18/runtime-config-logging.html#GUC-LOG-MIN-DURATION-STATEMENT)). |
+| `log_parameter_max_length` | `0` | `-1` (in full) | Zero "disables logging of bind parameters for non-error statement logs" ([logging](https://www.postgresql.org/docs/18/runtime-config-logging.html#GUC-LOG-PARAMETER-MAX-LENGTH)), so a slow-query line never carries a user's values. |
+| `log_lock_waits` | `on` | `off` | Logs a session that waits longer than `deadlock_timeout` (1 s) for a lock ([logging](https://www.postgresql.org/docs/18/runtime-config-logging.html#GUC-LOG-LOCK-WAITS), [locks](https://www.postgresql.org/docs/18/runtime-config-locks.html#GUC-DEADLOCK-TIMEOUT)). |
+| `log_temp_files` | `0` | `-1` (off) | Logs every temporary file with its size ([logging](https://www.postgresql.org/docs/18/runtime-config-logging.html#GUC-LOG-TEMP-FILES)). A spill means a query outgrew `work_mem`. |
+| `log_autovacuum_min_duration` | `1s` | `10min` | Logs every autovacuum action that took 1 s or more, and any that was skipped for a lock ([logging](https://www.postgresql.org/docs/18/runtime-config-logging.html#GUC-LOG-AUTOVACUUM-MIN-DURATION)). |
+| `log_line_prefix` | `%m [%p] %q%u@%d app=%a sqlstate=%e query_id=%Q ` | `%m [%p] ` | Time, process, then user, database, application name (the API connects as `<service name>-api`), SQLSTATE and the query id, which matches `pg_stat_statements.queryid`. `%q` stops background processes before the session-only fields ([logging](https://www.postgresql.org/docs/18/runtime-config-logging.html#GUC-LOG-LINE-PREFIX)). |
+| `archive_mode` | `POSTGRES_ARCHIVE_MODE`, `off` locally, `on` in production | `off` | `deploy/deploy.sh` and the backup scripts export `POSTGRES_ARCHIVE_MODE=on`; local and e2e stacks have nowhere to archive to. |
+| `archive_timeout` | `60` | off | Forces a segment switch after a minute with activity, so a lost disk loses about a minute: "`archive_timeout` settings of a minute or so are usually reasonable" ([WAL](https://www.postgresql.org/docs/18/runtime-config-wal.html#GUC-ARCHIVE-TIMEOUT)). |
+| `archive_command`, `restore_command` | `wal-g wal-push %p`, `wal-g wal-fetch %f %p` | empty | Only run when `archive_mode` is on, and during recovery. The local image has no `wal-g`, and it never needs one. |
+
+The service also sets `shm_size: 128mb`, as the postgres image's own compose example does ([postgres image](https://hub.docker.com/_/postgres)): parallel queries share memory through `/dev/shm`.
+
+`docker compose logs postgres` shows the slow-query, lock-wait, temp-file and autovacuum lines. `pg_stat_statements` ranks statements by total time:
+
+```sql
+SELECT query, calls, total_exec_time, mean_exec_time FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 5;
+```
+
+### Memory limits
+
+Docker sets no memory limit by default ([resource constraints](https://docs.docker.com/engine/containers/resource_constraints/)), so `deploy/docker-compose.production.yml` sets `mem_limit` on every service. `api` and `migrate` get 512 MB each. `postgres` gets `POSTGRES_MEMORY_LIMIT` (default `1g`), which has to hold:
+
+- `shared_buffers`, 256 MB, allocated at start;
+- `/dev/shm`, up to 128 MB, which counts against the container like any tmpfs;
+- three autovacuum workers (the default `autovacuum_max_workers`, [autovacuum](https://www.postgresql.org/docs/18/runtime-config-autovacuum.html#GUC-AUTOVACUUM-MAX-WORKERS)) at `maintenance_work_mem` each, 192 MB;
+- the API's 15 connections, each with one or two `work_mem` operations at a time, about 240 MB.
+
+That adds up to about 816 MB, and the rest is headroom for connection overhead and the page cache, which the kernel shrinks before it kills anything. Keep `shared_buffers` at a quarter of the limit: raise `POSTGRES_MEMORY_LIMIT` and `POSTGRES_SHARED_BUFFERS` together, and `POSTGRES_EFFECTIVE_CACHE_SIZE` to the limit minus `shared_buffers`.
+
+### Backups
+
+Production archives every WAL segment and takes a full base backup each day, with [WAL-G](https://github.com/wal-g/wal-g), into any S3-compatible bucket. A restore replays the newest base backup plus the archived WAL to the last archived minute. A scheduled `pg_dump` can't do that: dumps "cannot be used as part of a continuous-archiving solution" ([continuous archiving](https://www.postgresql.org/docs/18/continuous-archiving.html)), and "except in simple cases, pg_dump is generally not the right choice for taking regular backups of production databases" ([pg_dump](https://www.postgresql.org/docs/18/app-pgdump.html)). WAL-G is the one tool for both halves: it pushes each segment from `archive_command`, takes base backups, encrypts on the client with libsodium, and speaks the S3 API to any store that takes `AWS_ENDPOINT` and path-style addressing ([storages](https://github.com/wal-g/wal-g/blob/v3.0.9/docs/STORAGES.md)).
+
+- **Image:** `deploy/postgres/Dockerfile` is `postgres:18-alpine`, the same base as local runs (so the data volume and its collation carry over), plus WAL-G built from the `v3.0.9` tag, checked against its commit. WAL-G's releases are Ubuntu glibc builds and Alpine packages none, so it is built with `-tags libsodium` ([building](https://github.com/wal-g/wal-g/blob/v3.0.9/docs/README.md)).
+- **Settings and secrets:** `deploy/postgres/backup.env.example` lists the keys. The real file lives outside the checkout with mode 600, and `{{ environment_prefix }}_POSTGRES_BACKUP_ENVIRONMENT_FILE` names it; `deploy/deploy.sh` refuses to run when it is missing or has another mode. Compose hands it to the production `postgres` container as `env_file:`, because `archive_command` runs inside that container. No credential is ever a command argument. Anyone who can run `docker inspect` can read it, and that is already root on the host.
+- **The key:** `WALG_LIBSODIUM_KEY` is 32 random bytes in hex. Write it straight into the file (`printf 'WALG_LIBSODIUM_KEY=%s\n' "$(openssl rand -hex 32)" >> <file>`) and copy it somewhere off the host and away from the bucket. Without it no backup can be read, and it can't be replaced in place: old backups need the old key.
+- **Bucket rights:** read, write and list. Nothing here deletes, so retention is a lifecycle rule on the bucket, longer than the restore window you promise. Expiring by age is safe because a base backup is taken every day. `WALG_PREVENT_WAL_OVERWRITE` makes a retried push compare with the archived segment instead of overwriting it ([PostgreSQL](https://github.com/wal-g/wal-g/blob/v3.0.9/docs/PostgreSQL.md)), so a bucket with object lock works too.
+- **`deploy/postgres/backup_postgres.sh`** checks that `archive_mode` is on, writes a restore point, switches the WAL segment and waits until `pg_stat_archiver` reports it archived, runs `wal-g backup-push`, then `wal-g wal-verify integrity timeline`, and fails on any lost segment. `deploy/deploy.sh` runs it after every deploy, so the first deploy has a base backup and every migration has a fresh one behind it.
+- **`deploy/postgres/verify_postgres_backup_restore.sh`** is the restore drill. It refuses when the newest base backup is older than 26 hours. It counts every table in production, switches the WAL segment and waits for the archive, then starts a throwaway container from the production image on `backend_egress`, the network the archiver reaches the bucket through, with no published port. It runs `wal-g backup-fetch LATEST`, replays the archived WAL with `recovery.signal` and `restore_command`, and promotes ([recovery](https://www.postgresql.org/docs/18/continuous-archiving.html#BACKUP-PITR-RECOVERY)). The copy runs with `archive_mode=off`, so it never pushes into the production prefix. It passes when the copy is out of recovery, its Alembic revision equals production's, and every table's row count is within `POSTGRES_RESTORE_DRILL_ROW_SLACK` (default 10) of production's at the switch. It prints the seconds to a usable database and the last replayed commit, then removes the container and its volume. Production only gets reads, one restore point and one WAL switch.
+
+Restore after losing the host: put back the checkout, the deploy `.env` and the backup env file with the key, then
+
+```sh
+export {{ environment_prefix }}_ENVIRONMENT_FILE=<deploy .env> {{ environment_prefix }}_POSTGRES_BACKUP_ENVIRONMENT_FILE=<backup env file> POSTGRES_ARCHIVE_MODE=on
+compose=(docker compose --env-file "${{ environment_prefix }}_ENVIRONMENT_FILE" -f docker-compose.yml -f deploy/docker-compose.production.yml)
+"${compose[@]}" build postgres
+"${compose[@]}" run --rm --no-deps --user postgres --entrypoint sh postgres -c \
+  'mkdir -p -m 0700 "$PGDATA" && wal-g backup-fetch "$PGDATA" LATEST && touch "$PGDATA/recovery.signal"'
+deploy/deploy.sh
+```
+
+Postgres replays every archived segment and then promotes to a new timeline. A long replay can outlast `--wait-timeout`; when `deploy.sh` gives up, wait for "archive recovery complete" in `docker compose logs postgres` and run it again.
+
+### Backup schedule
+
+WAL archiving runs inside Postgres and needs no schedule. The base backups and the drill run from `deploy/postgres/run_postgres_backup_schedule.sh`, a plain loop: a base backup every `POSTGRES_BACKUP_INTERVAL_SECONDS` (default a day), the drill every `POSTGRES_RESTORE_DRILL_INTERVAL_SECONDS` (default a week), a retry after `POSTGRES_BACKUP_RETRY_SECONDS` (default an hour) when either fails, and one UTC-stamped line per run. It has no cron entry or systemd timer. Start it in its own tmux server so it outlives the login shell:
+
+```sh
+systemd-run --scope --unit=tmux-{{ project_slug }} tmux -L {{ project_slug }} new-session -d -s postgres-backups \
+  -e {{ environment_prefix }}_ENVIRONMENT_FILE=<deploy .env> -e {{ environment_prefix }}_POSTGRES_BACKUP_ENVIRONMENT_FILE=<backup env file> \
+  "deploy/postgres/run_postgres_backup_schedule.sh 2>&1 | tee -a <log file>"
+```
+
+Both scripts take a lock, so a run by hand and the loop never overlap. A host reboot ends the loop; start it again, and its first pass runs at once, so it catches up. When it stays down, the drill run by hand fails on the base backup's age, and the next deploy still takes a base backup.
 {%- endif %}
 
 ## Connection packages and external HTTP APIs
@@ -141,35 +226,41 @@ app/infrastructure/<name>_api/
 - **Retries** with [stamina](https://stamina.hynek.me/en/stable/), only on connection errors, 429 and 5xx, only for requests safe to repeat, honouring `Retry-After`. `httpx.AsyncHTTPTransport(retries=n)` retries only connect failures ([transports](https://www.python-httpx.org/advanced/transports/)).
 - **Credentials live in the client**, never in a caller: a static key is a default header; an expiring token is refreshed by one shared task, so parallel callers never refresh twice ([RFC 9700 §4.14.2](https://www.rfc-editor.org/rfc/rfc9700#section-4.14.2)).
 
-`models.py` means SQLAlchemy tables everywhere and `schemas.py` means Pydantic wire shapes everywhere, so an API package's bodies are `schemas.py`.
+{% if include_postgres %}`models.py` means SQLAlchemy tables everywhere and `schemas.py`{% else %}`schemas.py`{% endif %} means Pydantic wire shapes everywhere, so an API package's bodies are `schemas.py`.
 
 ## Configuration
 
-Every setting lives in a pydantic-settings `BaseSettings` in a `configuration.py`: one per package that has settings, each with its own `env_prefix` (`{{ environment_prefix }}_` for the app, `{{ environment_prefix }}_<PACKAGE>_` for a package{% if include_accounts %}, such as `{{ environment_prefix }}_ACCOUNTS_`{% endif %}). App-wide settings (service identity, the DSNs, trusted proxy addresses, the log level) go in `app/configuration.py`.
+Every setting lives in a pydantic-settings `BaseSettings` in a `configuration.py`: one per package that has settings, each with its own `env_prefix` (`{{ environment_prefix }}_` for the app, `{{ environment_prefix }}_<PACKAGE>_` for a package{% if include_accounts %}, such as `{{ environment_prefix }}_ACCOUNTS_`{% endif %}). App-wide settings (service identity, {% if include_postgres %}the DSN, {% endif %}trusted proxy addresses, the log level) go in `app/configuration.py`.
 
 - **Non-secret settings carry their default in the class**; the environment only overrides it.
-- **Secrets and DSNs have no default**, are `SecretStr` (DSNs also `repr=False`), and a missing one fails at startup.
+- **Secrets{% if include_postgres %} and DSNs{% endif %} have no default**, are `SecretStr`{% if include_postgres %} (DSNs also `repr=False`){% endif %}, and a missing one fails at startup.
 - **Each getter is `@lru_cache`** ([FastAPI settings](https://fastapi.tiangolo.com/advanced/settings/#creating-the-settings-only-once-with-lru-cache)).
-- **Services receive settings values by keyword** from the lifespan or a dependency (`AccountService.on_session(session, relying_party=...)`); they never read settings themselves.
-- **Nothing else reads the environment.** ruff's banned-api refuses `os.environ` and `os.getenv` everywhere, and `migrations/env.py` takes the DSN from `read_application_settings()`.
-- **`.env.example` lists every key**, and it is the only other place a key name appears. Compose hands the env file to the backend containers through `env_file:` (`{{ environment_prefix }}_ENVIRONMENT_FILE`, default `.env`) and repeats no key in `environment:`.
+- **Services receive settings values by keyword** from the lifespan or a dependency{% if include_accounts %} (`AccountService.on_session(session, relying_party=...)`){% endif %}; they never read settings themselves.
+- **Nothing else reads the environment.** ruff's banned-api refuses `os.environ` and `os.getenv` everywhere{% if include_postgres %}, and `migrations/env.py` takes the DSN from `read_connection_settings()`{% endif %}.
+- **`.env.example` lists every key**, and it is the only other place a key name appears. Compose hands the env file to the backend containers through `env_file:` (`{{ environment_prefix }}_ENVIRONMENT_FILE`, default `.env`) and repeats no key in `environment:`.{% if include_postgres %} The same file feeds compose interpolation, which is how the `POSTGRES_*` keys reach the `postgres` service.{% endif %}
 
 ## One resources lifespan
 
-`app/lifespan/resources.py` holds `Resources`, a frozen, typed model, and each process role opens it once with an `AsyncExitStack` (`app/lifespan/composition.py`), so resources close in reverse order even when startup fails halfway. A missing or wrong resource fails at startup, before the first request: the database refuses a schema behind Alembic head{% if include_redis %} and Redis is pinged{% endif %}. Dependencies read it through one typed accessor (`ResourcesDependency`); nothing else reads `app.state`.
+`app/lifespan/resources.py` holds `Resources`, a frozen, typed model, and each process role opens it once with an `AsyncExitStack` (`app/lifespan/composition.py`), so resources close in reverse order even when startup fails halfway. A missing or wrong resource fails at startup, before the first request{% if include_postgres %}: the database refuses a schema behind Alembic head{% endif %}. Dependencies read it through one typed accessor (`ResourcesDependency`); nothing else reads `app.state`.
 
 ## Startup does no work
 
-The API is built by a uvicorn factory (`create_app`, run with `factory=True` by `python -m app serve-api`), so importing `app.main` reads no settings. The API lifespan opens connections and returns. Migrations, seeding, rebuilding derived state and maintenance are deploy steps (the compose `migrate` service) or worker passes, so a restart is fast and the same everywhere.
+The API is built by a uvicorn factory (`create_app`, run with `factory=True` by `python -m app serve-api`), so importing `app.main` reads no settings. The API lifespan opens connections and returns. {% if include_postgres %}Migrations, seeding, rebuilding derived state and maintenance are deploy steps (the compose `migrate` service) or worker passes{% else %}Seeding, rebuilding derived state and maintenance are deploy steps or worker passes{% endif %}, so a restart is fast and the same everywhere.
 
 ## Background work
 
-Work outside a request runs in a worker process, never inside the web server. The template ships none; an app that needs one adds `python -m app run-worker` as its own compose service from the same image. The worker opens `Resources` like the API and runs each job as a plain `async` loop: one pass, one transaction, then a sleep, all in one `asyncio.TaskGroup`. A pass that fails is logged and the loop goes on; a loop that dies is logged and ends the process, so compose restarts it.
+Work outside a request runs in a worker process, never inside the web server. The template ships none; an app that needs one adds `python -m app run-worker` as its own compose service from the same image. The worker opens `Resources` like the API and runs each job as a plain `async` loop: one pass{% if include_postgres %}, one transaction{% endif %}, then a sleep, all in one `asyncio.TaskGroup`. A pass that fails is logged and the loop goes on; a loop that dies is logged and ends the process, so compose restarts it.
 
+{%- if include_postgres %}
 - **One active worker.** The worker takes a Postgres session advisory lock (`pg_try_advisory_lock`) on startup; a second worker waits and does nothing until the lock frees.
+{%- else %}
+- **One active worker.** Compose runs one replica of the worker service.
+{%- endif %}
 - **Every pass is idempotent**: it can run twice or be killed halfway without damage. A pass that sends something records the send first.
-- **Passes read current data.** A pass loads what it needs each time, so a restarted worker picks up where the database says.
-- **Shutdown:** SIGTERM cancels the loops, the passes roll back, and `Resources` closes. `stop_grace_period` is longer than the slowest pass.
+- **Passes read current data.** A pass loads what it needs each time, so a restarted worker picks up where {% if include_postgres %}the database says{% else %}the systems it reads say{% endif %}.
+- **Shutdown:** SIGTERM cancels the loops, {% if include_postgres %}the passes roll back, {% endif %}and `Resources` closes. `stop_grace_period` is longer than the slowest pass.
+
+{%- if include_postgres %}
 
 There is no job queue library. When work must be deferred from a request, the request writes a row in its own transaction and a worker loop picks it up, so the work exists only if the write committed.
 
@@ -178,16 +269,20 @@ There is no job queue library. When work must be deferred from a request, the re
 A change and the message about it must not drift apart. Use a transactional outbox: write the event in the same transaction as the change, and let a worker send it, so a message is sent "if and only if the database transaction commits"; the consumer must be idempotent ([transactional outbox](https://microservices.io/patterns/data/transactional-outbox.html)).
 
 Receiving a webhook: verify the signature against the raw body and reject old timestamps ([Standard Webhooks](https://www.standardwebhooks.com/)), store the event id and skip repeats, record the work and return `2xx` at once, and never rely on arrival order.
+{%- endif %}
 
 ## CLI
 
 One entry point, `python -m app` (and `{{ project_slug }}` in `[project.scripts]`), built on typer. Each process role is a command (`serve-api`, and `run-worker` once there is one). Each domain's commands live in its `cli.py`, added to `app/cli.py`. A command opens only the resources it needs and calls a service.
 
+{%- if include_postgres %}
+
 ## Migrations
 
 Alembic owns the schema: one linear history in `backend/migrations/versions/` (`NNNN_<name>.py`), no `create_all`, no hand `ALTER` on a live database. After a model change: `alembic revision --autogenerate`, read the file, then `alembic check` must report nothing.
 
-An applied revision never changes; a fix is the next revision. Forward only: `downgrade()` raises. `create index concurrently` goes in its own revision with `autocommit_block()`. A change to an existing column is expand, then contract once every caller has moved. A new or renamed Postgres enum member is a revision too (`ALTER TYPE ... ADD VALUE` or `RENAME VALUE`).
+An applied revision never changes; a fix is the next revision. Forward only: `downgrade()` raises. `create index concurrently` goes in its own revision with `autocommit_block()`. A change to an existing column is expand, then contract once every caller has moved. A new or renamed Postgres enum member is a revision too (`ALTER TYPE ... ADD VALUE` or `RENAME VALUE`). So is a Postgres extension: `0002` creates `pg_stat_statements`.
+{%- endif %}
 
 ## Verification
 
@@ -219,8 +314,8 @@ No unit tests. Verification is running the real system: the flows in `e2e/` star
 
 - **HTTP JSON:** no custom response class. With a typed return, FastAPI serializes through Pydantic straight to bytes, and it deprecates `ORJSONResponse` and `UJSONResponse` ([custom response](https://fastapi.tiangolo.com/advanced/custom-response/#orjson-or-response-model)). Both are on banned-api.
 - **JSON elsewhere:** Pydantic's `model_validate_json`, `model_dump_json` and `TypeAdapter`. Raw JSON with no model uses [orjson](https://github.com/ijl/orjson) (`tools/dump_openapi.py`). The standard library `json` is on banned-api.
-- **Event loop:** [uvloop](https://pypi.org/project/uvloop/). The API runs under uvicorn with `loop="uvloop"` (`app/cli.py`), and every other async entry point starts with `uvloop.run(main())` (`migrations/env.py`). Event-loop policies are deprecated since Python 3.14 ([asyncio policies](https://docs.python.org/3/library/asyncio-policy.html)), so `asyncio.run`, `asyncio.set_event_loop_policy` and `uvloop.install` are on banned-api.
-- **Blocking work** runs on a named `BlockingExecutor` per kind of work (`app/shared/blocking_executor.py`), opened on the process's `AsyncExitStack` and held on `Resources` (`file_read_executor` reads the Alembic head at startup). The default executor also serves the loop's DNS lookups, so one slow blocking call there stalls name resolution for the whole process. `asyncio.to_thread` is on banned-api.
+- **Event loop:** [uvloop](https://pypi.org/project/uvloop/). The API runs under uvicorn with `loop="uvloop"` (`app/cli.py`), and every other async entry point starts with `uvloop.run(main())`{% if include_postgres %} (`migrations/env.py`){% endif %}. Event-loop policies are deprecated since Python 3.14 ([asyncio policies](https://docs.python.org/3/library/asyncio-policy.html)), so `asyncio.run`, `asyncio.set_event_loop_policy` and `uvloop.install` are on banned-api.
+- **Blocking work** runs on a named `BlockingExecutor` per kind of work{% if include_postgres %} (`app/shared/blocking_executor.py`){% endif %}, opened on the process's `AsyncExitStack` and held on `Resources`{% if include_postgres %} (`file_read_executor` reads the Alembic head at startup){% else %}; the app has no blocking work yet, so it has no executor{% endif %}. The default executor also serves the loop's DNS lookups, so one slow blocking call there stalls name resolution for the whole process. `asyncio.to_thread` is on banned-api.
 - **`lazy import`** ([PEP 810](https://peps.python.org/pep-0810/)) for a heavy module a CLI command or worker only sometimes needs. The template has none yet.
 
 ## Gates
@@ -228,24 +323,30 @@ No unit tests. Verification is running the real system: the flows in `e2e/` star
 One command runs every gate: `uvx prek run --all-files` ([prek](https://github.com/j178/prek) reads `.pre-commit-config.yaml`; the hooks are `repo: local` with `language: system`, so tool versions come from `backend/uv.lock`). Copier installs it as a pre-commit and pre-push hook (`uvx prek install`).
 
 - **uv:** `uv.lock` is committed; the hooks and the image install with `--locked`. `prerelease = "explicit"`, and `exclude-newer = "7 days"` keeps any release younger than a week out of the lock, so a bad upload has time to be caught before an app pulls it ([uv resolution](https://docs.astral.sh/uv/concepts/resolution/)).
-- **ruff format and ruff check** (`app tools migrations`): `ALL` (dead code through `F401`, `F841` and `ARG`; complexity through `C901` at `max-complexity = 10`, `PLR0911`, `PLR0912` and `PLR0915`), with `D`, `CPY` and `COM812` off, and `TC001`-`TC003` off because FastAPI and pydantic read annotations at runtime, so type-only imports break routes. Its banned-api list (`[tool.ruff.lint.flake8-tidy-imports.banned-api]`) refuses `typing.cast`, `typing.Any`, `os.environ`, `os.getenv`, `json`, dataclasses, NamedTuple bundles, `requests`, `aiohttp`, `asyncio.gather`, `asyncio.wait_for`, `asyncio.to_thread`, `asyncio.run`, event-loop policies, hand-made decorators, `fastapi.HTTPException`, custom JSON response classes and loggers other than `app.shared.logging`.
+- **ruff format and ruff check** (`app tools{% if include_postgres %} migrations{% endif %}`): `ALL` (dead code through `F401`, `F841` and `ARG`; complexity through `C901` at `max-complexity = 10`, `PLR0911`, `PLR0912` and `PLR0915`), with `D`, `CPY` and `COM812` off, and `TC001`-`TC003` off because FastAPI and pydantic read annotations at runtime, so type-only imports break routes. Its banned-api list (`[tool.ruff.lint.flake8-tidy-imports.banned-api]`) refuses `typing.cast`, `typing.Any`, `os.environ`, `os.getenv`, `json`, dataclasses, NamedTuple bundles, `requests`, `aiohttp`, `asyncio.gather`, `asyncio.wait_for`, `asyncio.to_thread`, `asyncio.run`, event-loop policies, hand-made decorators, `fastapi.HTTPException`, custom JSON response classes and loggers other than `app.shared.logging`.
 - **ty** (`app tools`, pinned exactly; it is pre-1.0), with the possibly-* rules as errors and `respect-type-ignore-comments = false`.
-- **semgrep** (`semgrep/house-rules.yaml`, over `app` and `migrations`, pinned 1.183.0; the hook fails on any finding and on any parse error in its JSON report, because a file semgrep cannot parse, such as one with `lazy import`, is otherwise skipped silently): the structural rules ruff cannot express: typed log emission, no type dispatch on our own classes, no `isinstance` parsing of JSON, no `model_copy(update=)`, no `from_attributes`, no `include=`/`exclude=` on wire output, `app.state` only through `Resources`, services never keep `Resources`, no underscore-private methods, no `@staticmethod`, no exception text copied into a raised error, closed sets are enums, wire model naming.
+- **semgrep** (`semgrep/house-rules.yaml`, over `app`{% if include_postgres %} and `migrations`{% endif %}, pinned 1.183.0; the hook fails on any finding and on any parse error in its JSON report, because a file semgrep cannot parse, such as one with `lazy import`, is otherwise skipped silently): the structural rules ruff cannot express: typed log emission, no type dispatch on our own classes, no `isinstance` parsing of JSON, no `model_copy(update=)`, no `from_attributes`, no `include=`/`exclude=` on wire output, `app.state` only through `Resources`, services never keep `Resources`, no underscore-private methods, no `@staticmethod`, no exception text copied into a raised error, closed sets are enums, wire model naming.
 - **lint-imports:** the `layers` contract, an `acyclic_siblings` contract over `app.{{ root_package }}`{% if include_accounts %}, the `forbidden` contracts (routes and entry modules never import a model or repository; models never import FastAPI or Starlette) and one `protected` contract per domain (only `app.{{ root_package }}.accounts` imports its models and repository){% endif %}. A new domain adds its own `protected` contract. Each contract carries `broken_contract_guidance` saying how to fix a break.
 - **deptry:** every dependency is used and every import is declared.
 - **OpenAPI:** `tools/dump_openapi.py` writes the document to a temporary folder and [openapi-spec-validator](https://github.com/python-openapi/openapi-spec-validator) checks it as OpenAPI 3.1.
 - **e2e fast checks:** ruff format, ruff check and ty over `e2e/`.
 - **gitleaks** over the git history.
+{%- if include_postgres %}
 
-`alembic check` needs a database, so it is not a hook: after a model change, run `alembic revision --autogenerate` against a running stack, read the file, then `alembic check` must report nothing.
+`alembic check` needs a database, so it is not a hook: after a model change, run `alembic revision --autogenerate` against a running stack, read the file, then `alembic check` must report nothing. The shell scripts in `deploy/` have no hook either; run `shellcheck` on them after a change.
+{%- endif %}
 
 ## Container image
 
-Multi-stage, following [uv's Docker guide](https://docs.astral.sh/uv/guides/integration/docker/). Dependencies install before the source is copied, so a code change reuses the dependency layer. The virtualenv is built in a builder stage and copied whole, so a Python bump changes only the `FROM` lines. The container runs as a non-root user, read-only with a small `/tmp`, all capabilities dropped, and starts the venv's binaries directly. One image serves every process (`serve-api`, `alembic upgrade head`, a worker). `Dockerfile.dockerignore` excludes everything the service does not run.
+Multi-stage, following [uv's Docker guide](https://docs.astral.sh/uv/guides/integration/docker/). Dependencies install before the source is copied, so a code change reuses the dependency layer. The virtualenv is built in a builder stage and copied whole, so a Python bump changes only the `FROM` lines. The container runs as a non-root user, read-only with a small `/tmp`, all capabilities dropped, and starts the venv's binaries directly. One image serves every process (`serve-api`{% if include_postgres %}, `alembic upgrade head`{% endif %}, a worker). `Dockerfile.dockerignore` excludes everything the service does not run.
 
 ## Environments and running it
 
-The app runs as Docker Compose on one host: `api`, `migrate`, `postgres`{% if include_redis %}, `redis`{% endif %}, behind a reverse proxy (`deploy/Caddyfile`). One image moves between environments; only environment variables differ, and every environment has its own database and credentials. `deploy/deploy.sh` builds the image from the checkout and starts the stack with `deploy/docker-compose.production.yml`, which joins the reverse proxy's network. No rollback: a bad release is fixed forward.
+The app runs as Docker Compose on one host: `api`{% if include_postgres %}, `migrate`, `postgres`{% endif %}, behind a reverse proxy (`deploy/Caddyfile`). One image moves between environments; only environment variables differ, and every environment has its own {% if include_postgres %}database and {% endif %}credentials. `deploy/deploy.sh` builds the image from the checkout and starts the stack with `deploy/docker-compose.production.yml`, which joins the reverse proxy's network and sets a `mem_limit` on every service. No rollback: a bad release is fixed forward.
+{%- if include_postgres %}
+
+Production differs from a local run in Postgres only: the `postgres` service runs the image from `deploy/postgres/Dockerfile` (the local image plus WAL-G), archives its WAL (`POSTGRES_ARCHIVE_MODE=on`, exported by `deploy/deploy.sh`), reads the backup env file, joins `backend_egress` to reach the bucket, and gets 60 s to stop so the archiver can push what is left. `deploy/deploy.sh` needs two paths in its environment, `{{ environment_prefix }}_ENVIRONMENT_FILE` and `{{ environment_prefix }}_POSTGRES_BACKUP_ENVIRONMENT_FILE`, and takes a base backup once the stack is up. Postgres operations has the settings, limits, backups and schedule.
+{%- endif %}
 
 Every long-running service has:
 
@@ -263,7 +364,7 @@ Every long-running service has:
 - No `model_copy(update=...)`: neither ty nor Pydantic checks the update dict. No call-site `include=` or `exclude=` on wire output: a different shape is a different model, as [FastAPI recommends](https://fastapi.tiangolo.com/tutorial/response-model/#response-model-include-and-response-model-exclude).
 - No type dispatch on our own classes: the behaviour lives on the class as a method or property, or Pydantic's discriminator picks the class ([Replace Conditional with Polymorphism](https://refactoring.com/catalog/replaceConditionalWithPolymorphism.html)). An enum's mapping is one property on the enum whose body is a `match` ending in `assert_never`, because ty proves that exhaustive. `assert` is banned (ruff `S101`).
 - Grouped values and collaborator carriers are frozen Pydantic models (`ConfigDict(frozen=True)`, plus `arbitrary_types_allowed=True` when fields are clients or services), like `Resources`.
-- Everything is UTC: timezone-aware `datetime`, `timestamptz` columns, `TZ=UTC` in every process.
+- Everything is UTC: timezone-aware `datetime`{% if include_postgres %}, `timestamptz` columns{% endif %}, `TZ=UTC` in every process.
 - No comments or docstrings: a name, a type or a smaller function says it. The two exceptions are the reason on a linter suppression and the link to the upstream bug a workaround exists for.
 - No hand-made decorators: the only decorators are the libraries' documented API (`router.get`, typer's `command`, `property`, Pydantic validators, `lru_cache` on settings getters as [FastAPI documents](https://fastapi.tiangolo.com/advanced/settings/#creating-the-settings-only-once-with-lru-cache)).
 - A change that introduces a pattern moves every caller in the same change. Nothing is left half on the old way.
@@ -291,7 +392,7 @@ Code reads like a sentence at the call site: `await account_service.get_account_
 - **Units in the name** when the type does not carry them: `TIMEOUT_SECONDS`, `max_size_bytes`, `created_at`.
 - **Constants** are `UPPER_SNAKE_CASE`. A constant shared by two domains belongs to the one that owns its meaning.
 - **Closed sets are enums**: no `Literal` with two or more string values.
-- **Namespaced keys** everywhere a string is an identifier: log operations, env variables (`{{ environment_prefix }}_<SETTING>`), {% if include_redis %}Redis keys, {% endif %}cookie names.
+- **Namespaced keys** everywhere a string is an identifier: log operations, env variables (`{{ environment_prefix }}_<SETTING>`), cookie names.
 
 ## Using the libraries fully
 
@@ -299,22 +400,32 @@ Before writing a helper, check whether the library already does it.
 
 - **FastAPI:** dependencies as `Annotated` aliases, a typed return on every route and no `response_model=` that repeats it (ruff `FAST`), `fastapi.status` constants, `lifespan=`, `APIRouter(prefix=..., tags=[...])` per domain.
 - **Pydantic:** constraints in the type (`Field(gt=0, max_length=200)`, `SecretStr`), `ConfigDict(frozen=True)` for values that must not change, `TypeAdapter` for plain types, `JsonValue` for arbitrary JSON, `model_validate_json` and `model_dump(mode="json")` at the boundaries, discriminated unions instead of type checks.
+{%- if include_postgres %}
 - **SQLAlchemy:** `select()` with explicit columns for partial reads, `with_for_update()` for locked reads, bulk `insert().values([...])`, never string-formatted SQL.
+{%- endif %}
 - **httpx:** `base_url`, default headers, `httpx.Timeout`, `httpx.Auth`.
 - **Standard library:** `enum.StrEnum`, `datetime.UTC`, `pathlib.Path`, `asyncio.TaskGroup` and `asyncio.timeout`, `itertools.batched`.
 
 ## Reliability habits
 
 - **Fail fast at startup.** Settings validate on load, `Resources` opens every connection before the server accepts traffic, and required settings have no defaults.
-- **Timeouts everywhere:** HTTP clients, `statement_timeout`, `lock_timeout`, idle transactions, {% if include_redis %}Redis calls, {% endif %}each worker pass, and shutdown drains.
+- **Timeouts everywhere:** HTTP clients, {% if include_postgres %}`statement_timeout`, `lock_timeout`, idle transactions, {% endif %}each worker pass, and shutdown drains.
 - **Bounded retries** with backoff and jitter, only for errors a retry can fix.
 - **Degrade, don't fall over.** When an optional integration is down, the request still works and the failure is logged.
 
 ## Starting a new domain
 
+{%- if include_postgres %}
 1. Pick its place in the import-linter `layers` contract; it may import only what sits below it. Add its `protected` contract.
 2. Create `app/{{ root_package }}/<domain>/models.py`, `repository.py`, `service.py`, and `types.py` if other domains read it.
 3. Import its `models` in `migrations/env.py` and add an Alembic revision for its tables.
 4. Add `configuration.py` with its own `env_prefix`, and its keys in `.env.example`, if it has settings.
 5. Add `router.py`, `schemas.py` and `dependencies.py` only when HTTP needs them, `sweeps.py` when a worker runs something for it, `cli.py` when an operator needs it.
 6. Add its wiring in `app/lifespan/`.
+{%- else %}
+1. Pick its place in the import-linter `layers` contract; it may import only what sits below it.
+2. Create `app/{{ root_package }}/<domain>/service.py`, and `types.py` if other domains read it.
+3. Add `configuration.py` with its own `env_prefix`, and its keys in `.env.example`, if it has settings.
+4. Add `router.py`, `schemas.py` and `dependencies.py` only when HTTP needs them, `sweeps.py` when a worker runs something for it, `cli.py` when an operator needs it.
+5. Add its wiring in `app/lifespan/`.
+{%- endif %}

@@ -14,12 +14,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - option_set: all-on
-            include_accounts: "true"
-            include_redis: "true"
-          - option_set: all-off
+          - option_set: no-postgres
+            include_postgres: "false"
             include_accounts: "false"
-            include_redis: "false"
+          - option_set: postgres
+            include_postgres: "true"
+            include_accounts: "false"
+          - option_set: postgres-accounts
+            include_postgres: "true"
+            include_accounts: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -28,8 +31,8 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
       - name: Generate the app
         env:
+          INCLUDE_POSTGRES: ${{ matrix.include_postgres }}
           INCLUDE_ACCOUNTS: ${{ matrix.include_accounts }}
-          INCLUDE_REDIS: ${{ matrix.include_redis }}
           OPTION_SET: ${{ matrix.option_set }}
         run: |
           git config --global user.name template-check
@@ -37,8 +40,8 @@ jobs:
           git config --global init.defaultBranch main
           uvx copier copy --trust --defaults --vcs-ref HEAD \
             --data project_slug=sample-app \
+            --data "include_postgres=${INCLUDE_POSTGRES}" \
             --data "include_accounts=${INCLUDE_ACCOUNTS}" \
-            --data "include_redis=${INCLUDE_REDIS}" \
             . "${RUNNER_TEMP}/${OPTION_SET}"
           git -C "${RUNNER_TEMP}/${OPTION_SET}" add --all
           git -C "${RUNNER_TEMP}/${OPTION_SET}" commit --quiet --message "Generated app"

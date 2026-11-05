@@ -20,8 +20,13 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app/backend
 COPY --from=python_dependencies_build /app/backend/.venv /app/backend/.venv
 RUN --mount=type=bind,source=backend,target=/repository_backend \
+{%- if include_postgres %}
     cp -r /repository_backend/app /repository_backend/migrations /repository_backend/alembic.ini /repository_backend/pyproject.toml /app/backend/ && \
     python -m compileall -q /app/backend/app /app/backend/migrations && \
+{%- else %}
+    cp -r /repository_backend/app /repository_backend/pyproject.toml /app/backend/ && \
+    python -m compileall -q /app/backend/app && \
+{%- endif %}
     chmod -R a+rX /app && \
     useradd --system --uid 10001 --no-create-home {{ database_name }}
 USER {{ database_name }}

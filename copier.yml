@@ -6,18 +6,24 @@ _tasks:
     when: "{{ _copier_operation == 'copy' }}"
   - "uv lock --quiet --directory backend"
   - "uv lock --quiet --directory e2e"
-  - "uv run --quiet --directory backend ruff check --select I --fix --quiet app tools migrations"
-  - "uv run --quiet --directory backend ruff format --quiet app tools migrations"
+  - "uv run --quiet --directory backend ruff check --select I --fix --quiet app tools{% if include_postgres %} migrations{% endif %}"
+  - "uv run --quiet --directory backend ruff format --quiet app tools{% if include_postgres %} migrations{% endif %}"
   - command: "uvx prek install --hook-type pre-commit --hook-type pre-push"
     when: "{{ _copier_operation == 'copy' }}"
 _message_after_copy: |
   {{ project_slug }} is ready. Next, cp .env.example .env and fill in:
+  {%- if include_postgres %}
     POSTGRES_PASSWORD: a long random value, also in place of POSTGRES_PASSWORD_HERE in {{ environment_prefix }}_DATABASE_URL.
+  {%- endif %}
   {%- if include_accounts %}
     {{ environment_prefix }}_ACCOUNTS_PUBLIC_BASE_URL: the origin passkeys are bound to.
   {%- endif %}
     {{ environment_prefix }}_TRUSTED_PROXY_ADDRESSES: the reverse proxy's fixed address, when one sits in front.
     REVERSE_PROXY_NETWORK: the reverse proxy's docker network, for deploy/deploy.sh only.
+  {%- if include_postgres %}
+  For production, also copy deploy/postgres/backup.env.example outside the checkout (mode 600) and fill in the bucket
+  and a new WAL-G key; deploy/deploy.sh refuses to run without it.
+  {%- endif %}
   Then: docker compose up -d --build --wait, and commit everything, uv.lock files included.
 
 project_slug:
@@ -45,15 +51,21 @@ project_description:
   help: One-line description
   default: "{{ project_slug }} backend"
 
-include_accounts:
+include_postgres:
   type: bool
-  help: Include passkey accounts (sign-up, sign-in, sessions)
+  help: Include PostgreSQL (SQLAlchemy, Alembic, a postgres service in compose, WAL archiving and base backups)
   default: true
 
-include_redis:
+include_accounts:
   type: bool
-  help: Include Redis (a client opened at startup and a redis service in compose)
-  default: false
+  help: Include passkey accounts (sign-up, sign-in, sessions); they keep their tables in Postgres
+  default: "{{ include_postgres }}"
+  when: "{{ include_postgres }}"
+  validator: >-
+    {% if include_accounts and not include_postgres %}
+    accounts keep their tables in Postgres, so they need include_postgres
+    {% endif %}
+
 
 environment_prefix:
   type: str
