@@ -88,4 +88,4 @@ update, but a running stack keeps its `redis` container until `docker compose up
   `uvx prek run --all-files`.
   A second job audits the workflows and the Dependabot config with [zizmor](https://docs.zizmor.sh/).
 - `.github/dependabot.yml`: weekly updates for the pinned actions, held back 7 days after each release.
-- `.github/pull_request_template.md`: the shape of a pull request description. Generated apps get the same file.
+- `template/.github/pull_request_template.md`: the shape of a pull request description in generated apps.
