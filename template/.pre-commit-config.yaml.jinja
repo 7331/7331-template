@@ -52,6 +52,13 @@ repos:
         language: system
         pass_filenames: false
         files: ^backend/
+      - id: backend-audit
+        name: uv audit (backend, known vulnerabilities)
+        entry: uv audit --locked --project backend
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push, manual]
       - id: e2e-sync
         name: e2e dependencies (locked)
         entry: uv sync --locked --quiet --project e2e

@@ -352,6 +352,7 @@ One command runs every gate: `uvx prek run --all-files` ([prek](https://github.c
 - **OpenAPI:** the hook rewrites `backend/openapi.json` from the code and [openapi-spec-validator](https://github.com/python-openapi/openapi-spec-validator) checks it as OpenAPI 3.1. A route change that is not reflected in the committed file fails the hook, because the hook leaves the file modified.
 - **e2e fast checks:** ruff format, ruff check and ty over `e2e/`.
 - **gitleaks** over the git history.
+- **uv audit** (pre-push and `manual` only, because it needs the network): checks every locked backend dependency against the [OSV](https://osv.dev/) database. It exits 1 on a known vulnerability and 2 when it cannot reach the service, so a finding and an outage read differently. It is still marked experimental in uv. When a fix is younger than the 7-day `exclude-newer` cooldown, add an `exclude-newer-package` entry for that one package in `backend/pyproject.toml`, run `uv lock --upgrade-package <name>`, and delete the entry once the cooldown has passed ([uv resolution](https://docs.astral.sh/uv/concepts/resolution/)). Run it by hand with `uvx prek run --hook-stage manual backend-audit`.
 {%- if include_postgres %}
 
 `alembic check` needs a database, so it is not a hook: after a model change, run `alembic revision --autogenerate` against a running stack, read the file, then `alembic check` must report nothing. The shell scripts in `deploy/` have no hook either; run `shellcheck` on them after a change.
