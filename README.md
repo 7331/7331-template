@@ -1,5 +1,7 @@
 # 7331-template
 
+[![template-check](https://github.com/7331/7331-template/actions/workflows/template-check.yml/badge.svg?branch=main)](https://github.com/7331/7331-template/actions/workflows/template-check.yml)
+
 A [Copier](https://copier.readthedocs.io/en/stable/) template that starts a Python backend app with one shape: FastAPI
 on Python 3.15, typed structlog events, a typer CLI, uv, and Docker Compose, with PostgreSQL through SQLAlchemy and
 Alembic unless you turn it off. It is backend only; the OpenAPI document is the contract for any client.
