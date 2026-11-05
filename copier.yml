@@ -12,24 +12,22 @@ _tasks:
   - command: "uvx prek install --hook-type pre-commit --hook-type pre-push"
     when: "{{ _copier_operation == 'copy' }}"
 _message_after_copy: |
-  {{ project_slug }} is ready. Next, cp .env.example .env and fill in:
+  {{ project_slug }} is ready. Fill in .env:
   {%- if include_postgres %}
-    {{ environment_prefix }}_APPLICATION_DATABASE_PASSWORD: a long random value, the API's own role.
+    {{ environment_prefix }}_APPLICATION_DATABASE_PASSWORD: a long random value for the API's database role.
   {%- endif %}
   {%- if include_accounts %}
     {{ environment_prefix }}_ACCOUNTS_PUBLIC_BASE_URL: the origin passkeys are bound to.
   {%- endif %}
     {{ environment_prefix }}_TRUSTED_PROXY_ADDRESSES: the reverse proxy's fixed address, when one sits in front.
-    REVERSE_PROXY_NETWORK: the reverse proxy's docker network, for deploy/deploy.sh only.
+    REVERSE_PROXY_NETWORK: the reverse proxy's docker network, read only by deploy/deploy.sh.
   {%- if include_postgres %}
-  Then cp .env.database-owner.example .env.database-owner and fill in:
-    POSTGRES_PASSWORD: another long random value, the superuser's.
-  Each password goes in once, and the settings build the DSNs from it.
-  Only postgres and migrate read .env.database-owner; the API never sees the superuser password.
-  For production, also copy deploy/postgres/backup.env.example outside the checkout (mode 600) and fill in the bucket
-  and a new WAL-G key; deploy/deploy.sh refuses to run without it.
+  Fill in .env.database-owner:
+    POSTGRES_PASSWORD: a different long random value for the superuser.
+  For production, copy deploy/postgres/backup.env.example outside the checkout with mode 600 and fill in the bucket
+  and a new WAL-G key.
   {%- endif %}
-  Then: docker compose up -d --build --wait, and commit everything, uv.lock files included.
+  Then run docker compose up -d --build --wait and commit everything, uv.lock files included.
 
 project_slug:
   type: str
@@ -70,7 +68,6 @@ include_accounts:
     {% if include_accounts and not include_postgres %}
     accounts keep their tables in Postgres, so they need include_postgres
     {% endif %}
-
 
 environment_prefix:
   type: str

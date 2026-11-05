@@ -2,98 +2,58 @@
 
 [![template-check](https://github.com/7331/7331-template/actions/workflows/template-check.yml/badge.svg?branch=main)](https://github.com/7331/7331-template/actions/workflows/template-check.yml)
 
-A [Copier](https://copier.readthedocs.io/en/stable/) template that starts a Python backend app with one shape: FastAPI
-on Python 3.15, typed structlog events, a typer CLI, uv, and Docker Compose, with PostgreSQL through SQLAlchemy and
-Alembic unless you turn it off. It is backend only; the OpenAPI document is the contract for any client.
-`ARCHITECTURE.md` in the generated app describes the rules the code follows.
+A [Copier](https://copier.readthedocs.io/en/stable/) template for a Python backend app. It gives you FastAPI on Python
+3.15, typed structlog events, a typer CLI, uv and Docker Compose. PostgreSQL through SQLAlchemy and Alembic is on
+unless you turn it off. There is no frontend. The OpenAPI document is the contract for any client. The generated
+`ARCHITECTURE.md` holds the rules the code follows.
 
 ## Start an app
 
 ```sh
 uvx copier copy --trust gh:7331/7331-template my-app
-```
-
-`--trust` lets Copier run the template's tasks after copying: `git init -b main` (unless the folder is already a
-repository), `uv lock` in `backend/` and `e2e/`, an import sort and format pass (the import order depends on the
-package name you pick), a first dump of `backend/openapi.json`, and `uvx prek install` for the pre-commit and pre-push hooks. Without `--trust`, run those by
-hand.
-
-`uv.lock` is not part of the template: each app generates its own on first copy and commits it.
-
-Then:
-
-```sh
 cd my-app
-cp .env.example .env        # with Postgres: the API role's password in APPLICATION_DATABASE_PASSWORD
-cp .env.database-owner.example .env.database-owner   # with Postgres: the superuser's password in POSTGRES_PASSWORD
+cp .env.example .env
+cp .env.database-owner.example .env.database-owner
 docker compose up -d --build --wait
 curl http://127.0.0.1:8000/health
-uvx prek run --all-files    # every gate
+uvx prek run --all-files
 ```
 
-Compose reads the env file named by `<PREFIX>_ENVIRONMENT_FILE` (default `.env`), both for its own interpolation
-(`--env-file`) and as the API's `env_file:`. With Postgres, a second file named by
-`<PREFIX>_DATABASE_OWNER_ENVIRONMENT_FILE` (default `.env.database-owner`) holds `POSTGRES_PASSWORD`, the superuser
-password, and only the `postgres` and `migrate` containers read it. `migrate` reads both files: it connects as the
-superuser and sets the API role's password from `<PREFIX>_APPLICATION_DATABASE_PASSWORD`. Each password appears once,
-and the settings build each DSN from it, with host `postgres` and port 5432 unless `<PREFIX>_DATABASE_HOST` or
-`<PREFIX>_DATABASE_PORT` says otherwise. The API connects as `<database>_application`, a role that can read and write
-rows but can't create objects or act as a superuser.
-`deploy/deploy.sh` requires `<PREFIX>_ENVIRONMENT_FILE` to point at the deploy env file, kept outside the checkout
-with mode 600. With Postgres it also requires `<PREFIX>_DATABASE_OWNER_ENVIRONMENT_FILE` and
-`<PREFIX>_POSTGRES_BACKUP_ENVIRONMENT_FILE`, the bucket and WAL-G key file made from
-`deploy/postgres/backup.env.example`, both mode 600 and outside the checkout.
-The generated `ARCHITECTURE.md` (Postgres operations) covers the server settings, memory limits, backups, the restore
-drill and how to run the backup schedule.
+`--trust` lets Copier run the setup tasks: `git init`, `uv lock` in `backend/` and `e2e/`, an import sort and format
+pass, a first `backend/openapi.json` and `uvx prek install`. Each app makes and commits its own `uv.lock`.
+
+Fill in the env files before the first `up`. The copy message lists every key. Without Postgres there is no
+`.env.database-owner`. The API reads `.env` and gets only its own database role's password.
+`.env.database-owner` holds the superuser password, and only the `postgres` and `migrate` containers read it.
+Production keeps both files outside the checkout with mode 600, plus the WAL-G backup file from
+`deploy/postgres/backup.env.example`. `deploy/deploy.sh` refuses to run without them.
 
 ## Questions
 
 | Question | What it does |
 | --- | --- |
-| `project_slug` | Lowercase name with hyphens (for example `shop-7331`). Names the compose project, the image, the Postgres database and superuser (hyphens removed; the API's role adds `_application`), the CLI script, and the API's service name. Its first segment, upper-cased, is the env prefix (`shop-7331` gives `SHOP_`). |
-| `root_package` | The domain root package under `backend/app/` (for example `shop` or `payments`). Defaults to the slug's first segment. Every domain package goes inside it. |
-| `project_description` | One line, used in `pyproject.toml` and the CLI help. |
-| `include_postgres` | Default yes. Adds `app/infrastructure/postgres/`, Alembic (`alembic.ini`, `migrations/`), the `postgres` and `migrate` compose services, the database password settings, a request-scoped `DatabaseSession`, a schema check at startup, and `deploy/postgres/` (the production image with WAL-G, the backup script, the restore drill and the backup schedule loop). With it off the app has no database at all. |
-| `include_accounts` | Asked only when `include_postgres` is on, and off without it: accounts keep their tables in Postgres. Default yes. Adds `app/<root>/accounts/`: open sign-up with a username and a passkey, passkey sign-in, cookie sessions, sign-out and `GET /api/v1/me`, its tables in the first migration, and a per-IP budget on passkey writes. |
+| `project_slug` | Lowercase with hyphens, like `shop-7331`. Names the compose project, the image, the database, the CLI and the service. Its first segment upper-cased is the env prefix (`SHOP_`). |
+| `root_package` | The domain package under `backend/app/`, like `shop`. Defaults to the slug's first segment. |
+| `project_description` | One line for `pyproject.toml` and the CLI help. |
+| `include_postgres` | Default yes. Adds Postgres 18, Alembic, the `migrate` service, a request-scoped `DatabaseSession` and `deploy/postgres/` with WAL-G backups and the restore drill. Off means no database at all. |
+| `include_accounts` | Asked only with Postgres. Default yes. Adds `app/<root>/accounts/`: passkey sign-up and sign-in, cookie sessions, sign-out and `GET /api/v1/me`. |
 
 ## Update an app
 
 ```sh
-cd my-app
 uvx copier update --trust
 ```
 
-`copier update` needs the app to be a git repository with a clean working tree, and reads `.copier-answers.yml`
-(never edit it by hand). It replays the template at the recorded version, diffs it against the newest release tag
-(PEP 440, for example `v0.2.0`), and applies that diff to the app, leaving conflicts as inline markers to resolve.
-Tag every template release.
+The app must be a git repository with a clean tree. Copier reads `.copier-answers.yml`, diffs the recorded template
+version against the newest release tag and applies that diff. Conflicts land as inline markers. Each
+[release](https://github.com/7331/7331-template/releases) lists the steps an update needs by hand.
 
-An app made with v0.1.7 or earlier keeps each database password twice, once on its own and once inside a DSN. After
-the update, replace the two URL keys with the password keys: in `.env`, swap `<PREFIX>_DATABASE_URL` for
-`<PREFIX>_APPLICATION_DATABASE_PASSWORD` with the password from that URL. In `.env.database-owner`, delete
-`<PREFIX>_MIGRATION_DATABASE_URL` and `<PREFIX>_APPLICATION_DATABASE_PASSWORD`, leaving `POSTGRES_PASSWORD`. Then run
-`docker compose up -d --build --wait`. Do the same in the production env files before the next `deploy/deploy.sh`.
+## This repository
 
-An app made before v0.1.4 has its API on the superuser. After the update, copy `.env.database-owner.example` to
-`.env.database-owner` (mode 600) and move `POSTGRES_PASSWORD` into it from the old `.env`. In `.env`, replace
-`<PREFIX>_DATABASE_URL` with a new `<PREFIX>_APPLICATION_DATABASE_PASSWORD` and run
-`docker compose up -d --build --wait`: `migrate` runs revision `0003`, which creates the role `<database>_application`,
-and then sets its password. The data stays. In production, the new file sits beside the deploy env file, outside the
-checkout, and `<PREFIX>_DATABASE_OWNER_ENVIRONMENT_FILE` names it for `deploy/deploy.sh`.
-
-An app made before v0.1.3 with `include_redis` loses the Redis code, the answer and the compose service in the
-update, but a running stack keeps its `redis` container until `docker compose up -d --remove-orphans`.
-`deploy/deploy.sh` already passes `--remove-orphans`.
-
-## Repository layout
-
-- `copier.yml`: the questions, the tasks and the message after copy. `_subdirectory: template` keeps this README and
-  the workflow out of generated apps.
-- `template/`: the files Copier renders. Only files ending in `.jinja` are rendered; the rest are copied as they are.
-  File and folder names are rendered too, and one that renders empty (an option that is off) is skipped.
-- `.github/workflows/template-check.yml`: on every push and pull request, generates the app three ways (no
-  Postgres; Postgres without accounts; Postgres with accounts), and runs every gate in each with
-  `uvx prek run --all-files`.
-  A second job audits the workflows and the Dependabot config with [zizmor](https://docs.zizmor.sh/).
-- `.github/dependabot.yml`: weekly updates for the pinned actions, held back 7 days after each release.
-- `template/.github/pull_request_template.md`: the shape of a pull request description in generated apps.
+- `copier.yml` holds the questions, the setup tasks and the copy message.
+- `template/` is what Copier renders. Only `.jinja` files are rendered. A file or folder whose name renders empty is
+  skipped, which is how the options drop their files.
+- `.github/workflows/template-check.yml` generates the app three ways (no Postgres, Postgres, Postgres with accounts)
+  and runs `uvx prek run --all-files` in each. A second job audits the workflows with
+  [zizmor](https://docs.zizmor.sh/).
+- Every release gets a tag, because `copier update` only moves between tags.
