@@ -8,6 +8,7 @@ _tasks:
   - "uv lock --quiet --directory e2e"
   - "uv run --quiet --directory backend ruff check --select I --fix --quiet app tools{% if include_postgres %} migrations{% endif %}"
   - "uv run --quiet --directory backend ruff format --quiet app tools{% if include_postgres %} migrations{% endif %}"
+  - "uv run --quiet --directory backend python tools/dump_openapi.py openapi.json"
   - command: "uvx prek install --hook-type pre-commit --hook-type pre-push"
     when: "{{ _copier_operation == 'copy' }}"
 _message_after_copy: |

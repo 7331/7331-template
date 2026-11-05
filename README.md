@@ -13,7 +13,7 @@ uvx copier copy --trust gh:7331/7331-template my-app
 
 `--trust` lets Copier run the template's tasks after copying: `git init -b main` (unless the folder is already a
 repository), `uv lock` in `backend/` and `e2e/`, an import sort and format pass (the import order depends on the
-package name you pick), and `uvx prek install` for the pre-commit and pre-push hooks. Without `--trust`, run those by
+package name you pick), a first dump of `backend/openapi.json`, and `uvx prek install` for the pre-commit and pre-push hooks. Without `--trust`, run those by
 hand.
 
 `uv.lock` is not part of the template: each app generates its own on first copy and commits it.
