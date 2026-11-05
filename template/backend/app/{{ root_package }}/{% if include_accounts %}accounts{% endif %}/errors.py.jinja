@@ -1,3 +1,4 @@
+from app.{{ root_package }}.accounts.schemas import CredentialIdLengthParameters
 from app.{{ root_package }}.accounts.types import ACCOUNT_SESSION_COOKIE_NAME
 from app.shared.errors import AppError, ConflictError, ForbiddenError, NotFoundError, UnauthorizedError
 
@@ -10,6 +11,17 @@ class PasskeyResponseInvalidError(AppError):
 class PasskeyChallengeExpiredError(AppError):
     code = "passkey_challenge_expired"
     status = 400
+
+
+class PasskeyCredentialIdTooLongError(AppError):
+    code = "passkey_credential_id_too_long"
+    status = 400
+    parameters_model = CredentialIdLengthParameters
+
+    def __init__(self, parameters: CredentialIdLengthParameters) -> None:
+        super().__init__(
+            f"the passkey's credential id is longer than {parameters.maximum_bytes} bytes", parameters=parameters
+        )
 
 
 class PasskeyAlreadyRegisteredError(ConflictError):
@@ -46,5 +58,5 @@ class CookieChallengedUnauthorizedError(UnauthorizedError):
     )
 
     def __init__(self, session_refusal: UnauthorizedError) -> None:
-        super().__init__(session_refusal.message)
+        super().__init__(session_refusal.message, parameters=session_refusal.parameters)
         self.code = session_refusal.code

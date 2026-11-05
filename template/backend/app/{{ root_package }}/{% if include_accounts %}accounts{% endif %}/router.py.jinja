@@ -6,6 +6,17 @@ from app.{{ root_package }}.accounts.dependencies import (
     AccountServiceDependency,
     AccountSessionTokenDependency,
 )
+from app.{{ root_package }}.accounts.errors import (
+    AccountNotFoundError,
+    AccountSessionExpiredError,
+    PasskeyAlreadyRegisteredError,
+    PasskeyChallengeExpiredError,
+    PasskeyCredentialIdTooLongError,
+    PasskeyResponseInvalidError,
+    PasskeyUnknownError,
+    SignInRequiredError,
+    UsernameTakenError,
+)
 from app.{{ root_package }}.accounts.schemas import (
     AccountResponse,
     PasskeyAuthenticationRequest,
@@ -14,6 +25,7 @@ from app.{{ root_package }}.accounts.schemas import (
 )
 from app.{{ root_package }}.accounts.service import ACCOUNT_SESSION_LIFETIME
 from app.{{ root_package }}.accounts.types import ACCOUNT_SESSION_COOKIE_NAME, AccountSummary, StartedAccountSession
+from app.shared.error_responses import describe_error_responses
 from app.shared.exception_handlers import NO_STORE_HEADERS
 from app.shared.path_params import API_PREFIX
 
@@ -42,7 +54,9 @@ def start_session_response(response: Response, *, started_session: StartedAccoun
     return present_account(started_session.account)
 
 
-@accounts_router.post("/accounts/passkey/registration-options")
+@accounts_router.post(
+    "/accounts/passkey/registration-options", responses=describe_error_responses((UsernameTakenError,))
+)
 async def create_passkey_registration_options(
     options_request: PasskeyRegistrationOptionsRequest,
     *,
@@ -53,7 +67,19 @@ async def create_passkey_registration_options(
     return await account_service.create_sign_up_options(options_request.username)
 
 
-@accounts_router.post("/accounts/passkey/registration", status_code=status.HTTP_201_CREATED)
+@accounts_router.post(
+    "/accounts/passkey/registration",
+    status_code=status.HTTP_201_CREATED,
+    responses=describe_error_responses(
+        (
+            PasskeyResponseInvalidError,
+            PasskeyChallengeExpiredError,
+            PasskeyCredentialIdTooLongError,
+            PasskeyAlreadyRegisteredError,
+            UsernameTakenError,
+        )
+    ),
+)
 async def register_passkey(
     registration_request: PasskeyRegistrationRequest,
     *,
@@ -74,7 +100,12 @@ async def create_passkey_authentication_options(
     return await account_service.create_sign_in_options()
 
 
-@accounts_router.post("/accounts/passkey/authentication")
+@accounts_router.post(
+    "/accounts/passkey/authentication",
+    responses=describe_error_responses(
+        (PasskeyResponseInvalidError, PasskeyChallengeExpiredError, PasskeyUnknownError)
+    ),
+)
 async def authenticate_passkey(
     authentication_request: PasskeyAuthenticationRequest,
     *,
@@ -95,7 +126,9 @@ async def sign_out(
     response.headers.update(NO_STORE_HEADERS)
 
 
-@accounts_router.get("/me")
+@accounts_router.get(
+    "/me", responses=describe_error_responses((SignInRequiredError, AccountSessionExpiredError, AccountNotFoundError))
+)
 async def read_current_account(
     *, response: Response, account_access: AccountAccessDependency, account_service: AccountServiceDependency
 ) -> AccountResponse:

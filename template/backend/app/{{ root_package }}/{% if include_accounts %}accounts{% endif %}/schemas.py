@@ -3,7 +3,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field, JsonValue
 
-from app.shared.schemas import ApiRequest, ApiResponse
+from app.shared.schemas import ApiRequest, ApiResponse, ErrorParameters
 
 AccountUsername = Annotated[str, Field(pattern=r"^[a-z0-9_]{3,32}$")]
 PasskeyLabel = Annotated[str, Field(min_length=1, max_length=100, pattern=r"^[^\x00-\x1f\x7f]+$")]
@@ -26,6 +26,10 @@ class AccountResponse(ApiResponse):
     account_id: str
     username: str
     created_at: datetime
+
+
+class CredentialIdLengthParameters(ErrorParameters):
+    maximum_bytes: int
 
 
 class PasskeyClientDataCarrier(BaseModel):

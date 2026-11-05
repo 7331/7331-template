@@ -36,6 +36,7 @@ from app.{{ root_package }}.accounts.errors import (
     OriginMismatchError,
     PasskeyAlreadyRegisteredError,
     PasskeyChallengeExpiredError,
+    PasskeyCredentialIdTooLongError,
     PasskeyResponseInvalidError,
     PasskeyUnknownError,
     SignInRequiredError,
@@ -49,7 +50,7 @@ from app.{{ root_package }}.accounts.models import (
     PasskeyChallenge,
 )
 from app.{{ root_package }}.accounts.repository import AccountRepository
-from app.{{ root_package }}.accounts.schemas import PasskeyCredentialEnvelope
+from app.{{ root_package }}.accounts.schemas import CredentialIdLengthParameters, PasskeyCredentialEnvelope
 from app.{{ root_package }}.accounts.types import (
     AccountAccess,
     AccountSummary,
@@ -156,7 +157,9 @@ class AccountService:
         except WebAuthnException as verification_error:
             raise PasskeyResponseInvalidError("the passkey did not verify") from verification_error
         if len(verified_registration.credential_id) > MAXIMUM_CREDENTIAL_ID_BYTES:
-            raise PasskeyResponseInvalidError("the passkey's credential id is longer than 1023 bytes")
+            raise PasskeyCredentialIdTooLongError(
+                CredentialIdLengthParameters(maximum_bytes=MAXIMUM_CREDENTIAL_ID_BYTES)
+            )
         return verified_registration
 
     async def create_sign_up_options(self, username: str) -> dict[str, JsonValue]:

@@ -1,21 +1,38 @@
 from typing import ClassVar
 
+from app.shared.schemas import ErrorDetail, ErrorParameters
+
 
 class AppError(Exception):
     code: str = "internal_error"
     status: int = 500
     retry_after_seconds: int | None = None
     response_headers: ClassVar[tuple[tuple[str, str], ...]] = ()
+    parameters_model: ClassVar[type[ErrorParameters] | None] = None
 
-    def __init__(self, message: str | None = None, *, retry_after_seconds: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        retry_after_seconds: int | None = None,
+        details: tuple[ErrorDetail, ...] = (),
+        parameters: ErrorParameters | None = None,
+    ) -> None:
         self.message = message if message is not None else self.code
         if retry_after_seconds is not None:
             self.retry_after_seconds = retry_after_seconds
+        self.details = details
+        self.parameters = parameters
         super().__init__(self.message)
 
 
 class InvalidInputError(AppError):
     code = "validation_error"
+    status = 400
+
+
+class MalformedBodyError(AppError):
+    code = "malformed_body"
     status = 400
 
 

@@ -1,26 +1,35 @@
+from collections.abc import Iterator
+from http import HTTPStatus
+
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from pydantic import JsonValue
 
 from app.rate_limit_middleware import UNLIMITED_PATHS
+from app.shared.error_responses import ERROR_CODES_EXTENSION
+from app.shared.errors import AppError, InvalidInputError, MalformedBodyError, RateLimitedError
 from app.shared.schemas import ErrorResponse
 
 ERROR_RESPONSE_SCHEMA_NAME = "ErrorResponse"
+REQUEST_ID_HEADER_NAME = "X-Request-ID"
+REQUEST_ID_HEADER_COMPONENT_NAME = "RequestId"
+REQUEST_ID_HEADERS: dict[str, JsonValue] = {
+    REQUEST_ID_HEADER_NAME: {"$ref": f"#/components/headers/{REQUEST_ID_HEADER_COMPONENT_NAME}"}
+}
+SHARED_RESPONSE_HEADERS: dict[str, JsonValue] = {
+    REQUEST_ID_HEADER_COMPONENT_NAME: {
+        "description": "The server-minted id of this request. A 5xx body repeats it as `request_id`.",
+        "schema": {"type": "string"},
+    }
+}
+RETRY_AFTER_HEADERS: dict[str, JsonValue] = {"Retry-After": {"schema": {"type": "integer"}}}
 ERROR_RESPONSE_CONTENT: dict[str, JsonValue] = {
     "application/json": {"schema": {"$ref": f"#/components/schemas/{ERROR_RESPONSE_SCHEMA_NAME}"}}
 }
 SHARED_ERROR_RESPONSES: dict[str, JsonValue] = {
-    "ValidationFailed": {
-        "description": "The path, query or body is not valid; code `validation_error`.",
-        "content": ERROR_RESPONSE_CONTENT,
-    },
-    "RateLimited": {
-        "description": "Over a request budget; code `rate_limited`, with `Retry-After`.",
-        "headers": {"Retry-After": {"schema": {"type": "integer"}}},
-        "content": ERROR_RESPONSE_CONTENT,
-    },
     "ApiError": {
-        "description": "Any refusal: `{error: {code, message}}`.",
+        "description": "Any error not listed for the operation, in the `ErrorResponse` shape.",
+        "headers": REQUEST_ID_HEADERS,
         "content": ERROR_RESPONSE_CONTENT,
     },
 }
@@ -56,24 +65,80 @@ def reference_shared_response(response_name: str) -> dict[str, JsonValue]:
     return {"$ref": f"#/components/responses/{response_name}"}
 
 
-def document_operation_errors(operation: JsonValue, *, path: str) -> None:
-    match operation:
-        case {"responses": dict() as responses}:
-            if responses.pop("422", None) is not None:
-                responses.setdefault("400", reference_shared_response("ValidationFailed"))
-            if path not in UNLIMITED_PATHS:
-                responses.setdefault("429", reference_shared_response("RateLimited"))
-            responses.setdefault("default", reference_shared_response("ApiError"))
-        case _:
-            pass
-
-
 def read_object_member(container: dict[str, JsonValue], *, member_name: str) -> dict[str, JsonValue]:
     match container.setdefault(member_name, {}):
         case dict() as member:
             return member
         case _:
             return {}
+
+
+def read_list_member(container: dict[str, JsonValue], *, member_name: str) -> list[JsonValue]:
+    match container.setdefault(member_name, []):
+        case list() as member:
+            return member
+        case _:
+            return []
+
+
+def iterate_strings(values: list[JsonValue]) -> Iterator[str]:
+    for value in values:
+        match value:
+            case str():
+                yield value
+            case _:
+                pass
+
+
+def add_error_codes(
+    responses: dict[str, JsonValue], *, status_code: HTTPStatus, error_codes: tuple[str, ...]
+) -> dict[str, JsonValue]:
+    status_response = read_object_member(responses, member_name=str(status_code.value))
+    listed_codes = read_list_member(status_response, member_name=ERROR_CODES_EXTENSION)
+    listed_codes.extend(error_code for error_code in error_codes if error_code not in listed_codes)
+    return status_response
+
+
+def is_error_status(status_code: str) -> bool:
+    return status_code.isdigit() and int(status_code) >= HTTPStatus.BAD_REQUEST
+
+
+def complete_error_response(response: dict[str, JsonValue]) -> None:
+    listed_codes = read_list_member(response, member_name=ERROR_CODES_EXTENSION)
+    sorted_codes = sorted(iterate_strings(listed_codes))
+    listed_codes[:] = sorted_codes
+    response["description"] = "Error codes: " + ", ".join(f"`{error_code}`" for error_code in sorted_codes) + "."
+    response["content"] = ERROR_RESPONSE_CONTENT
+
+
+def document_operation_errors(operation: JsonValue, *, path: str) -> None:
+    match operation:
+        case dict():
+            responses = read_object_member(operation, member_name="responses")
+            if responses.pop("422", None) is not None:
+                validation_codes = (
+                    (InvalidInputError.code, MalformedBodyError.code)
+                    if "requestBody" in operation
+                    else (InvalidInputError.code,)
+                )
+                add_error_codes(responses, status_code=HTTPStatus.BAD_REQUEST, error_codes=validation_codes)
+            if path not in UNLIMITED_PATHS:
+                rate_limited_response = add_error_codes(
+                    responses, status_code=HTTPStatus.TOO_MANY_REQUESTS, error_codes=(RateLimitedError.code,)
+                )
+                read_object_member(rate_limited_response, member_name="headers").update(RETRY_AFTER_HEADERS)
+            add_error_codes(responses, status_code=HTTPStatus.INTERNAL_SERVER_ERROR, error_codes=(AppError.code,))
+            for status_code, response in responses.items():
+                match response:
+                    case dict():
+                        if is_error_status(status_code):
+                            complete_error_response(response)
+                        read_object_member(response, member_name="headers").update(REQUEST_ID_HEADERS)
+                    case _:
+                        pass
+            responses.setdefault("default", reference_shared_response("ApiError"))
+        case _:
+            pass
 
 
 def add_error_components(components: dict[str, JsonValue]) -> None:
@@ -87,6 +152,7 @@ def add_error_components(components: dict[str, JsonValue]) -> None:
     error_response_schema.pop("$defs")
     component_schemas[ERROR_RESPONSE_SCHEMA_NAME] = error_response_schema
     read_object_member(components, member_name="responses").update(SHARED_ERROR_RESPONSES)
+    read_object_member(components, member_name="headers").update(SHARED_RESPONSE_HEADERS)
 
 
 def document_path_errors(path_item: JsonValue, *, path: str) -> None:
