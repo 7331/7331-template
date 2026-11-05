@@ -61,7 +61,7 @@ include_postgres:
 
 include_accounts:
   type: bool
-  help: Include passkey accounts (sign-up, sign-in, sessions); they keep their tables in Postgres
+  help: Include passkey accounts (sign-up, sign-in, sessions), with their tables in Postgres
   default: "{{ include_postgres }}"
   when: "{{ include_postgres }}"
   validator: >-
