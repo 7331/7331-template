@@ -188,9 +188,7 @@ def walk_passkey_journey(flow_report: FlowReport, *, api_publish_port: int, comp
         signed_in_session=signed_up_session,
         check_name="current account after sign-up",
     )
-    sign_out(
-        flow_report, accounts_api=accounts_api, signed_in_session=signed_up_session, compose_stack=compose_stack
-    )
+    sign_out(flow_report, accounts_api=accounts_api, signed_in_session=signed_up_session, compose_stack=compose_stack)
     signed_in_session = sign_in(
         flow_report, accounts_api=accounts_api, passkey=passkey, expected_account=signed_up_session.account
     )
